@@ -125,10 +125,9 @@ account), it is a dry run with its own state and ledger files, so you can watch 
 **Products and earnings from CJ.** With `CJ_API_TOKEN`, `CJ_COMPANY_ID` and `CJ_WEBSITE_ID` set,
 autopilot finds products itself and pulls earnings every cycle from CJ's commission report. Each
 product's link carries its own `sid`, so sales are matched to products automatically, and the
-program's EPC sets the bid. Two limits: it can only use programs you've joined (each advertiser
-approves its own publishers, often by hand), and it can't tell ad sales from free-pin sales of the
-same pin, so ads look a little better than they are. CJ's EPC also comes from all its publishers'
-traffic, which usually converts better than cold Pinterest ad clicks; the 40% bid margin covers part of that.
+program's EPC sets the bid. Ads use the same link with `sid=<id>-ad`, so ad sales are counted
+apart from free-pin sales. It can only use programs you've joined: each advertiser approves its
+own publishers, often by hand.
 
 Other networks: write `PINAGENTS_EARNINGS_CSV` (`product_id,date,earnings`) from your network's
 report. Without earnings data, no product can prove it's profitable, so each one stops after its
