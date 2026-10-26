@@ -146,3 +146,14 @@ def test_check_command_reports_each_service(fake_cj, monkeypatch, capsys):
     assert "OK    CJ programs: 1 joined" in out and "Rug Co: 12%" in out
     assert "OK    CJ products: 2 products" in out
     assert "OK    CJ commissions:" in out
+
+
+def test_rejected_field_names_come_back_with_the_real_ones(fake_cj, monkeypatch):
+    def post(url, json, **kw):
+        if "__type" in json["query"]:
+            return Resp(body={"data": {"__type": {"fields": [{"name": "clickURL", "args": []},
+                                                             {"name": "imageURL", "args": []}]}}})
+        return Resp(body={"errors": [{"message": 'Cannot query field "clickUrl" on type "LinkCode".'}]})
+    monkeypatch.setattr(cj.requests, "post", post)
+    with pytest.raises(ValueError, match="LinkCode has: clickURL, imageURL"):
+        cj.program_products({"id": "111"}, [])

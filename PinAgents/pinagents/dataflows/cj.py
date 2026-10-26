@@ -35,13 +35,33 @@ def _headers() -> dict:
     return {"Authorization": f"Bearer {os.environ['CJ_API_TOKEN']}"}
 
 
-def _graphql(url: str, query: str) -> dict:
+def _graphql(url: str, query: str, explain: bool = True) -> dict:
     resp = requests.post(url, json={"query": query}, headers=_headers(), timeout=60)
     resp.raise_for_status()
     body = resp.json()
     if body.get("errors"):
-        raise ValueError(f"CJ API error: {body['errors']}")
+        messages = "; ".join(str(e.get("message", e)) for e in body["errors"])
+        raise ValueError(f"CJ API error: {messages}" + (_schema_hint(url, messages) if explain else ""))
     return body["data"]
+
+
+def _schema_hint(url: str, messages: str) -> str:
+    """When CJ rejects a field or argument name, ask its schema what the real names are."""
+    hints = []
+    for name in dict.fromkeys(re.findall(r'on (?:type|field) "?([A-Za-z_][\w.]*)"?', messages)):
+        type_name, _, field = name.partition(".")
+        try:
+            t = _graphql(url, f'{{ __type(name: "{type_name}") {{ fields {{ name args {{ name }} }} }} }}',
+                         explain=False)["__type"]
+        except Exception:
+            continue
+        fields = (t or {}).get("fields") or []
+        if field:
+            args = next((f["args"] for f in fields if f["name"] == field), [])
+            hints.append(f"{name} takes: {', '.join(a['name'] for a in args)}")
+        else:
+            hints.append(f"{type_name} has: {', '.join(f['name'] for f in fields)}")
+    return f" (CJ's schema says {'; '.join(hints)})" if hints else ""
 
 
 def _sale_commission(advertiser) -> float | None:
