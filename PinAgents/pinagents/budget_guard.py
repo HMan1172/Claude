@@ -34,8 +34,8 @@ class BudgetGuard:
         with open(self.ledger_path, encoding="utf-8") as f:
             return json.load(f)
 
-    def spent_today(self) -> float:
-        return self._ledger()["days"].get(date.today().isoformat(), 0.0)
+    def spent_today(self, today: str | None = None) -> float:
+        return self._ledger()["days"].get(today or date.today().isoformat(), 0.0)
 
     def spent_total(self) -> float:
         return self._ledger()["total"]
@@ -55,6 +55,16 @@ class BudgetGuard:
             raise SpendRefused(f"Total cap ${self.total_cap:.2f} reached (spent ${ledger['total']:.2f}).")
         ledger["days"][today] = round(day_spent + amount, 2)
         ledger["total"] = round(ledger["total"] + amount, 2)
+        self._save(ledger)
+
+    def settle(self, day: str, actual: float) -> None:
+        """Replace what was authorized for a finished day with what was really spent."""
+        ledger = self._ledger()
+        ledger["total"] = round(ledger["total"] - ledger["days"].get(day, 0.0) + actual, 2)
+        ledger["days"][day] = round(actual, 2)
+        self._save(ledger)
+
+    def _save(self, ledger: dict) -> None:
         os.makedirs(os.path.dirname(self.ledger_path) or ".", exist_ok=True)
         with open(self.ledger_path, "w", encoding="utf-8") as f:
             json.dump(ledger, f, indent=1)

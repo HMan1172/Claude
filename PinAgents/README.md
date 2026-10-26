@@ -27,8 +27,8 @@ START ─┬─> Product Scout ──┐
 2. **Stage 2: automatic posting** through Pinterest's official v5 API. Needs a Business account,
    a developer app and Standard access. The client is in `pinagents/dataflows/pinterest_api.py`
    and runs as a dry run until you set `allow_posting: True`.
-3. **Stage 3: ads.** Only worth building once Stage 1 shows clicks earn more than ads cost.
-   `BudgetGuard` already enforces a daily cap, a total cap and a kill switch in plain code.
+3. **Stage 3: ads.** `pinagents autopilot` runs Stages 1-3 unattended (see below).
+   `BudgetGuard` enforces a daily cap, a total cap and a kill switch in plain code.
 
 ## Install
 
@@ -78,6 +78,47 @@ cp .env.example .env               # then set your provider and key
 
 Try everything for free first with `--provider mock`. It runs offline with placeholder text so you
 can see the whole flow before paying for an API key.
+
+## Autopilot: no human in the loop
+
+```bash
+pinagents autopilot --niche "home office" --products products.csv            # one cycle
+pinagents autopilot --niche "home office" --products products.csv --loop 24  # keep going
+```
+
+Or run one cycle a day from cron: `15 7 * * * cd /path/to/PinAgents && .venv/bin/pinagents autopilot --niche "home office" --products products.csv >> autopilot.log 2>&1`
+
+Each cycle:
+
+1. Refreshes the Pinterest access token (needs `PINTEREST_APP_ID`, `PINTEREST_APP_SECRET`,
+   `PINTEREST_REFRESH_TOKEN` once; the rotating refresh token is then kept in `~/.pinagents/`).
+2. When no pins are waiting, the agents write a new batch (using lessons from earlier results).
+3. Posts the pins that are due, at most `pins_per_day`.
+4. Runs ads, all in plain code:
+   - One traffic campaign with Pinterest's own lifetime spend cap set to `ads_total_cap`.
+   - One ad group per product, paying per outbound click with the **bid capped at the most a click
+     can earn**: `assumed_conversion_rate x price x commission x 0.7`. Products that can't afford
+     Pinterest's minimum bid are never advertised.
+   - Every dollar of daily budget is authorized by `BudgetGuard` first; real spend from Pinterest
+     replaces the authorized amount once a day is over.
+   - A product is paused when it has 20+ clicks and has earned less than it cost, or when it has
+     spent `ads_test_spend_per_product` without proving it earns more than it costs.
+   - `~/.pinagents/STOP` pauses the campaign on the next cycle.
+5. Once a week, ad results become lessons for the agents' next batch.
+
+Until you set `PINAGENTS_ALLOW_POSTING=1` / `PINAGENTS_ALLOW_ADS=1` (plus a token, board and ad
+account), it is a dry run with its own state and ledger files, so you can watch a few cycles first.
+
+**Earnings data.** Affiliate networks don't share one API, so autopilot reads
+`PINAGENTS_EARNINGS_CSV` (`product_id,date,earnings`). Have your network's export or report
+script write it. Use a separate tracking ID for ad links so it only counts ad-driven sales.
+Without it, no product can prove it's profitable, so each one stops after its test budget.
+
+**Know before you switch ads on.** At typical numbers (2% of clicks buy, 4% commission), a click
+on a $35 product earns about 3 cents, below the 10-cent `ads_min_bid` default, so autopilot will
+refuse to advertise it. Set `ads_min_bid` to the real minimum Pinterest Ads Manager shows you. Ads only make sense for high-commission products. Many affiliate programs (Amazon
+Associates included) restrict paid ads with their links, and Pinterest reviews every ad against
+its own ad policies, so check both before turning ads on.
 
 ## Python
 

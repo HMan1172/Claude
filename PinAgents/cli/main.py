@@ -3,9 +3,11 @@
   pinagents run --niche "home office" --products products.csv
   pinagents track --niche "home office" --sheet results/<run>/tracking.csv
   pinagents economics --conversion 0.05 --order 40 --commission 0.04 --cpc 0.15
+  pinagents autopilot --niche "home office" --products products.csv [--loop 24]
 """
 import argparse
 import sys
+import time
 
 try:
     from dotenv import load_dotenv
@@ -67,6 +69,23 @@ def cmd_track(args):
         print(line)
 
 
+def cmd_autopilot(args):
+    from pinagents.autopilot import run_cycle
+
+    cfg = _config(args)
+    while True:
+        try:
+            for line in run_cycle(args.niche, args.products, cfg):
+                print(line)
+        except Exception as err:
+            if not args.loop:
+                raise
+            print(f"Cycle failed, will retry next cycle. {type(err).__name__}: {err}", file=sys.stderr)
+        if not args.loop:
+            return
+        time.sleep(args.loop * 3600)
+
+
 def cmd_economics(args):
     epc = expected_epc(args.conversion, args.order, args.commission)
     print(f"Expected earnings per click: ${epc:.3f}")
@@ -96,6 +115,13 @@ def main(argv=None):
     t.add_argument("--provider", choices=["anthropic", "openai", "ollama", "mock"])
     t.add_argument("--no-lessons", action="store_true")
     t.set_defaults(func=cmd_track)
+
+    a = sub.add_parser("autopilot", help="Write, post and advertise pins unattended (one cycle)")
+    a.add_argument("--niche", required=True)
+    a.add_argument("--products", required=True, help="CSV of candidate products")
+    a.add_argument("--provider", choices=["anthropic", "openai", "ollama", "mock"])
+    a.add_argument("--loop", type=float, metavar="HOURS", help="Keep running a cycle every HOURS")
+    a.set_defaults(func=cmd_autopilot)
 
     e = sub.add_parser("economics", help="Check whether ads could be profitable")
     e.add_argument("--conversion", type=float, required=True, help="Share of clicks that buy, e.g. 0.05")
