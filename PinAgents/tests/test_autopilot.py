@@ -112,7 +112,7 @@ def test_unproven_product_stops_at_test_budget(tmp_path):
     run_cycle("home office", PRODUCTS, c, client, today="2026-10-26")
     st = state(tmp_path)
     key, ad_id = next(iter(st["ads"].items()))
-    client.stats[ad_id] = {"spend": 10.0, "clicks": 80, "impressions": 9000}
+    client.stats[ad_id] = {"spend": 20.0, "clicks": 80, "impressions": 9000}
     run_cycle("home office", PRODUCTS, c, client, today="2026-10-27")
     pid = st["posted"][key]["product_id"]
     assert state(tmp_path)["groups"][pid]["status"] == "PAUSED"

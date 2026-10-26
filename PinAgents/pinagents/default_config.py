@@ -40,8 +40,10 @@ DEFAULT_CONFIG = {
     "autopilot_state_path": os.path.expanduser("~/.pinagents/autopilot.json"),
     "ad_group_daily_budget": 1.00,      # per product; daily cap / this = products advertised at once
     "ads_min_bid": 0.10,                # products that can't afford this per click are never advertised
-    "ads_test_spend_per_product": 10.00,  # a product that hasn't proven profitable by then is paused
-    "assumed_conversion_rate": 0.02,    # share of clicks that buy, used until real earnings exist
+    "ads_test_spend_per_product": 20.00,  # a product that hasn't proven profitable by then is paused
+    # Share of clicks that buy, used to cap bids. Deliberately low: experiments/simulate.py found
+    # that cautious bids buy cheaper clicks and beat optimistic ones across all its scenarios.
+    "assumed_conversion_rate": 0.01,
     "ads_countries": ["US"],
     # CSV of product_id,earnings from your affiliate network (cumulative, from ad links only).
     "earnings_csv": os.getenv("PINAGENTS_EARNINGS_CSV", ""),

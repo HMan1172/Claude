@@ -112,13 +112,30 @@ account), it is a dry run with its own state and ledger files, so you can watch 
 **Earnings data.** Affiliate networks don't share one API, so autopilot reads
 `PINAGENTS_EARNINGS_CSV` (`product_id,date,earnings`). Have your network's export or report
 script write it. Use a separate tracking ID for ad links so it only counts ad-driven sales.
-Without it, no product can prove it's profitable, so each one stops after its test budget.
+Without it, no product can prove it's profitable, so each one stops after its $20 test budget.
 
-**Know before you switch ads on.** At typical numbers (2% of clicks buy, 4% commission), a click
-on a $35 product earns about 3 cents, below the 10-cent `ads_min_bid` default, so autopilot will
+**Know before you switch ads on.** At typical numbers (1-2% of clicks buy, 4% commission), a click
+on a $35 product earns 1-3 cents, below the 10-cent `ads_min_bid` default, so autopilot will
 refuse to advertise it. Set `ads_min_bid` to the real minimum Pinterest Ads Manager shows you. Ads only make sense for high-commission products. Many affiliate programs (Amazon
 Associates included) restrict paid ads with their links, and Pinterest reviews every ad against
 its own ad policies, so check both before turning ads on.
+
+## Simulating ad results
+
+`python experiments/simulate.py` runs the autopilot's real ad code against a made-up Pinterest
+market for 60 days per trial ($5/day, $100 total cap, 5 products). Every range in it is an
+assumption, not data, so read it as how the rules behave, not as a forecast. With the defaults:
+
+| Scenario | Mean profit | Worst 10% | Runs in profit |
+|---|---|---|---|
+| Amazon-style (3-4.5% commission) | $0 (never bids) | $0 | 0% |
+| Brand programs (8-20% commission) | about +$200 | $0 | 80-85% |
+| High-ticket (15-40% commission, rare sales) | about +$140 | about -$20 | 85% |
+| Weak (poor conversion) | $0 (never bids) | $0 | 0% |
+
+Tried and rejected: bids that learn from early sales (sales are too rare, so good products got cut),
+moving freed budget to surviving products, and raising bids on winners (on a fixed budget that
+just buys pricier clicks).
 
 ## Python
 
