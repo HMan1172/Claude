@@ -147,8 +147,24 @@ In a cheap market ($0.10-0.50) profits roughly double; in an expensive one ($0.7
 mostly vanish (+$2 to +$70) and high-ticket's worst 10% lose about $30.
 
 Tried and rejected: bids that learn from early sales (sales are too rare, so good products got cut),
-moving freed budget to surviving products, and raising bids on winners (on a fixed budget that
-just buys pricier clicks).
+moving freed budget to surviving products, raising bids on winners (on a fixed budget that
+just buys pricier clicks), and growing budgets only on proven winners (no better than a flat budget).
+
+### Scaling up
+
+In the simulator, profit grows with the number of products and the budget per product, not with
+cleverer rules. Weekly profit after 8 weeks, 30 products at $20/day each (`PINAGENTS_MAX_PRODUCTS=30`,
+`PINAGENTS_AD_GROUP_BUDGET=20`, `PINAGENTS_ADS_DAILY_CAP=600`, `PINAGENTS_PINS_PER_DAY=10`):
+
+| Programs | Cheap clicks ($0.10-0.50) | Typical clicks ($0.25-1.00) |
+|---|---|---|
+| Home brands (4-12%) | ~$430/week on ~$225 spend | ~$80/week on ~$50 spend |
+| Top brands (10-20%) | ~$2,400/week on ~$830 spend | ~$600/week on ~$300 spend |
+| High-ticket (15-40%) | ~$5,800/week on ~$1,700 spend | ~$1,900-2,100/week on ~$730-870 spend |
+
+The upper rows rest on an unsourced assumption: that each product can win 50-400 auctions a day.
+If Pinterest has fewer clicks to sell in your niche, scale stops there whatever the budget. Raise
+budgets in steps and only after `earnings.csv` shows real ad-driven sales.
 
 ## Python
 

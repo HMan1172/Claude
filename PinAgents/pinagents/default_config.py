@@ -10,10 +10,10 @@ DEFAULT_CONFIG = {
     "ollama_base_url": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
 
     # Content
-    "max_products": 5,          # products the scout shortlists per run
+    "max_products": int(os.getenv("PINAGENTS_MAX_PRODUCTS", "5")),  # products the scout shortlists per run
     "pins_per_product": 2,      # pin variations written per product
     "max_revision_rounds": 2,   # writer <-> compliance loops before rejected pins are dropped
-    "pins_per_day": 3,          # posting schedule pace
+    "pins_per_day": int(os.getenv("PINAGENTS_PINS_PER_DAY", "3")),  # posting schedule pace
     "posting_times": ["08:00", "13:00", "20:00"],
     "disclosure": "Affiliate link: I may earn a commission if you buy.",
 
@@ -38,7 +38,8 @@ DEFAULT_CONFIG = {
 
     # Autopilot (unattended posting + ads)
     "autopilot_state_path": os.path.expanduser("~/.pinagents/autopilot.json"),
-    "ad_group_daily_budget": 1.00,      # per product; daily cap / this = products advertised at once
+    # Per product; daily cap / this = products advertised at once.
+    "ad_group_daily_budget": float(os.getenv("PINAGENTS_AD_GROUP_BUDGET", "1.00")),
     "ads_min_bid": 0.10,                # products that can't afford this per click are never advertised
     "ads_test_spend_per_product": 20.00,  # a product that hasn't proven profitable by then is paused
     # Share of clicks that buy, for products without a conversion_rate column. Published Pinterest
