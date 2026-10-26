@@ -46,6 +46,8 @@ cp .env.example .env               # then set your provider and key
 
 1. Copy `products_example.csv` to `products.csv` and fill in real products from your affiliate
    programs: `id, name, url, price, commission_rate` (as `0.04` or `4%`), plus optional `program, notes`.
+   If you'll run ads, also add `conversion_rate`: the share of clicks that buy, as your affiliate
+   network reports it for that program (CJ, Impact and ShareASale show it or EPC per program).
    Put 10-30 candidates in; the scout keeps the best 5.
 
 2. Run the agents:
@@ -96,9 +98,10 @@ Each cycle:
 3. Posts the pins that are due, at most `pins_per_day`.
 4. Runs ads, all in plain code:
    - One traffic campaign with Pinterest's own lifetime spend cap set to `ads_total_cap`.
-   - One ad group per product, paying per outbound click with the **bid capped at the most a click
-     can earn**: `assumed_conversion_rate x price x commission x 0.7`. Products that can't afford
-     Pinterest's minimum bid are never advertised.
+   - One ad group per product, paying per outbound click with the **bid capped at 40% of what a
+     click should earn**: `conversion_rate x price x commission x 0.4` (`assumed_conversion_rate`,
+     1.75%, when the CSV has none). Products that can't afford Pinterest's $0.10 minimum bid are
+     never advertised, and neither are Amazon links (see below).
    - Every dollar of daily budget is authorized by `BudgetGuard` first; real spend from Pinterest
      replaces the authorized amount once a day is over.
    - A product is paused when it has 20+ clicks and has earned less than it cost, or when it has
@@ -114,24 +117,34 @@ account), it is a dry run with its own state and ledger files, so you can watch 
 script write it. Use a separate tracking ID for ad links so it only counts ad-driven sales.
 Without it, no product can prove it's profitable, so each one stops after its $20 test budget.
 
-**Know before you switch ads on.** At typical numbers (1-2% of clicks buy, 4% commission), a click
-on a $35 product earns 1-3 cents, below the 10-cent `ads_min_bid` default, so autopilot will
-refuse to advertise it. Set `ads_min_bid` to the real minimum Pinterest Ads Manager shows you. Ads only make sense for high-commission products. Many affiliate programs (Amazon
-Associates included) restrict paid ads with their links, and Pinterest reviews every ad against
-its own ad policies, so check both before turning ads on.
+**Know before you switch ads on.**
+- Amazon Associates' agreement (effective April 14, 2026) disqualifies purchases referred through
+  any paid or boosted ad linking to Amazon, so autopilot never advertises amazon.* links. Organic
+  pins are unaffected. Ads need brand programs that allow paid social traffic.
+- Published 2026 benchmarks put most Pinterest clicks at $0.30-1.50 (home decor $0.10-0.50),
+  and Pinterest's US minimum CPC bid is $0.10. A click on a $35 product at 4% commission earns
+  1-3 cents, so it can never pay for itself; ads only work for high-commission programs.
+- Check each program's terms on paid ads, and Pinterest reviews every ad against its ad policies.
 
 ## Simulating ad results
 
-`python experiments/simulate.py` runs the autopilot's real ad code against a made-up Pinterest
-market for 60 days per trial ($5/day, $100 total cap, 5 products). Every range in it is an
-assumption, not data, so read it as how the rules behave, not as a forecast. With the defaults:
+`python experiments/simulate.py` runs the autopilot's real ad code against a simulated Pinterest
+auction for 60 days per trial ($5/day, $100 total cap, 5 products). Click prices, commission
+rates and conversion rates come from published benchmarks where they exist (see the comments in
+the script); the rest are assumptions. Read it as how the rules behave, not as a forecast.
 
-| Scenario | Mean profit | Worst 10% | Runs in profit |
+Mean profit per 60 days at typical click prices ($0.25-1.00 median), 200 trials each, with and
+without a network-reported `conversion_rate` (simulated as up to ~40% wrong):
+
+| Scenario | Without conversion_rate | With conversion_rate | Worst 10% (with) |
 |---|---|---|---|
-| Amazon-style (3-4.5% commission) | $0 (never bids) | $0 | 0% |
-| Brand programs (8-20% commission) | about +$200 | $0 | 80-85% |
-| High-ticket (15-40% commission, rare sales) | about +$140 | about -$20 | 85% |
-| Weak (poor conversion) | $0 (never bids) | $0 | 0% |
+| Home brand programs (4-12% commission) | +$12, 14% of runs profit | +$51, 59% | about -$1 |
+| Top brand programs (10-20%) | +$134, 80% | +$152, 87% | about $0 |
+| High-ticket (15-40%, rare sales) | +$86, 76% | +$229, 90% | about -$6 |
+| Weak conversion | $0 (never bids) | $0 | $0 |
+
+In a cheap market ($0.10-0.50) profits roughly double; in an expensive one ($0.70-2.90) they
+mostly vanish (+$2 to +$70) and high-ticket's worst 10% lose about $30.
 
 Tried and rejected: bids that learn from early sales (sales are too rare, so good products got cut),
 moving freed budget to surviving products, and raising bids on winners (on a fixed budget that

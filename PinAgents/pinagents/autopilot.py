@@ -25,6 +25,9 @@ from .output import save_run
 from .tracker import MIN_CLICKS, analyze
 
 STATS_DAYS = 89  # Pinterest analytics only go back 90 days
+# Bid 40% of what a click should earn. On a fixed daily budget, lower bids buy cheaper clicks;
+# experiments/simulate.py found 60% beat 30% across cheap, typical and expensive markets.
+BID_MARGIN = 0.6
 
 
 def _empty_state() -> dict:
@@ -89,7 +92,8 @@ def _generate(st, niche, products_csv, config, today, log):
     state = PinAgentsGraph(config).propagate(niche, products_csv, run_date=today)
     run_dir = save_run(state, config)
     for s in state.get("shortlist", []):
-        st["products"][s["id"]] = {"name": s["name"], "expected_commission": s["expected_commission"]}
+        st["products"][s["id"]] = {"name": s["name"], "expected_commission": s["expected_commission"],
+                                   "domain": s["domain"], "conversion_rate": s.get("conversion_rate")}
     pins = state.get("final", {}).get("pins", [])
     for p in pins:
         st["queue"].append({
@@ -139,6 +143,11 @@ def _verdict(spend: float, clicks: float, earned, config) -> str:
     if spend >= config["ads_test_spend_per_product"]:
         return f"spent ${spend:.2f} without proving it earns more than it costs"
     return ""
+
+
+def _is_amazon(domain: str) -> bool:
+    """Amazon links: since the April 14, 2026 Associates agreement, ad-referred sales earn nothing."""
+    return any(part == "amazon" for part in domain.lower().split(".")) or domain.lower().endswith("amzn.to")
 
 
 def _run_ads(st, client, guard, config, today, log) -> dict:
@@ -192,9 +201,15 @@ def _run_ads(st, client, guard, config, today, log) -> dict:
         if key in st["ads"]:
             continue
         pid = p["product_id"]
+        if pid not in st["groups"] and _is_amazon(st["products"].get(pid, {}).get("domain", "")):
+            st["groups"][pid] = {"status": "SKIPPED", "reason": "Amazon pays no commission on sales from paid ads"}
+            log.append(f"Not advertising {pid}: {st['groups'][pid]['reason']}.")
+            continue
         if pid not in st["groups"]:
-            epc = config["assumed_conversion_rate"] * st["products"].get(pid, {}).get("expected_commission", 0)
-            bid = round(max_cpc(epc), 2)
+            prod = st["products"].get(pid, {})
+            cr = prod.get("conversion_rate") or config["assumed_conversion_rate"]
+            epc = cr * prod.get("expected_commission", 0)
+            bid = round(max_cpc(epc, BID_MARGIN), 2)
             if bid < config["ads_min_bid"]:
                 st["groups"][pid] = {"status": "SKIPPED",
                                      "reason": f"can only afford ${bid:.2f} per click, minimum is ${config['ads_min_bid']:.2f}"}

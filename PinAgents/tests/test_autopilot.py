@@ -149,3 +149,26 @@ def test_dry_run_keeps_separate_state_and_ledger(tmp_path, monkeypatch):
     assert any("Dry run" in line for line in log)
     assert (tmp_path / "autopilot-dry.json").exists() and not (tmp_path / "autopilot.json").exists()
     assert (tmp_path / "ledger-dry.json").exists() and not (tmp_path / "ledger.json").exists()
+
+
+def test_amazon_links_are_never_advertised(tmp_path):
+    products = tmp_path / "products.csv"
+    products.write_text("id,name,url,price,commission_rate\n"
+                        "a,Lamp,https://www.amazon.com/dp/B0TEST?tag=me-20,500,10%\n"
+                        "b,Rug,https://www.example.com/rug?aff=me,500,10%\n")
+    c, client = full_config(tmp_path), FakeClient()
+    run_cycle("home office", str(products), c, client, today="2026-10-25")
+    run_cycle("home office", str(products), c, client, today="2026-10-26")
+    groups = state(tmp_path)["groups"]
+    assert groups["a"]["status"] == "SKIPPED" and "Amazon" in groups["a"]["reason"]
+    assert groups["b"]["status"] == "ACTIVE"
+
+
+def test_network_conversion_rate_sets_the_bid(tmp_path):
+    products = tmp_path / "products.csv"
+    products.write_text("id,name,url,price,commission_rate,conversion_rate\n"
+                        "a,Rug,https://www.example.com/rug,100,10%,5%\n")
+    c, client = full_config(tmp_path), FakeClient()
+    run_cycle("home", str(products), c, client, today="2026-10-25")
+    run_cycle("home", str(products), c, client, today="2026-10-26")
+    assert state(tmp_path)["groups"]["a"]["bid"] == 0.2   # 5% x $10 commission x 0.4

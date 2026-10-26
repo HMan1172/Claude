@@ -1,9 +1,12 @@
 """Runs the autopilot's real ad logic against a simulated Pinterest market.
 
-Nothing here is real data. Every range below is an assumption, so treat results as
-"how the rules behave if the world looks like this", not as a profit forecast.
+Ranges come from public benchmarks where they exist (noted beside each) and are assumptions
+where they don't, so read results as "how the rules behave if the world looks like this",
+not as a profit forecast. Amazon is left out: since the April 14, 2026 Associates agreement,
+purchases referred through paid or boosted ads earn no commission, so Amazon ads earn $0.
 
   python experiments/simulate.py                  # all scenarios, 200 trials each
+  python experiments/simulate.py --cpc 0.10 0.50  # cheaper market (home decor benchmarks)
   python experiments/simulate.py --trials 50 --seed 7 --set ads_test_spend_per_product=5
 """
 import argparse
@@ -27,16 +30,20 @@ N = NormalDist()
 # Each product: price, commission rate, true share of clicks that buy, order size vs list price.
 # Market: median cost per click, day-to-day auction spread, auctions available per day.
 SCENARIOS = {
-    # Amazon-style: low commission, but any purchase within 24h counts, so conversion is higher.
-    "amazon": dict(price=(15, 80), rate=(0.03, 0.045), cr=(0.03, 0.10), cart=(1.0, 1.8)),
-    # Brand programs: higher commission, ordinary conversion.
-    "brand": dict(price=(25, 150), rate=(0.08, 0.20), cr=(0.01, 0.04), cart=(1.0, 1.2)),
-    # Expensive items with big commissions that rarely sell.
+    # Home brand programs: 2-12% commission (Wayfair 4-10%, Ruggable 6%, Society6 10%,
+    # One Kings Lane 12%); Promoted Pins convert 2-4% on the merchant's own site, so 1-4%
+    # after the extra affiliate hop.
+    "home_brand": dict(price=(25, 150), rate=(0.04, 0.12), cr=(0.01, 0.04), cart=(1.0, 1.2)),
+    # Top-paying brand programs (assumption: the upper end of published rates and beyond).
+    "brand_high": dict(price=(25, 150), rate=(0.10, 0.20), cr=(0.01, 0.04), cart=(1.0, 1.2)),
+    # Expensive items with big commissions that rarely sell (assumption, no benchmark found).
     "high_ticket": dict(price=(100, 400), rate=(0.15, 0.40), cr=(0.003, 0.015), cart=(1.0, 1.0)),
-    # Pessimistic: modest commission, poor conversion.
+    # Pessimistic: modest commission, poor conversion (assumption).
     "weak": dict(price=(15, 60), rate=(0.04, 0.10), cr=(0.002, 0.01), cart=(1.0, 1.1)),
 }
-MARKET = dict(median_cpc=(0.15, 0.70), spread=0.6, auctions=(50, 400))
+# Median cost per click per product: published 2026 Pinterest benchmarks put most CPCs at
+# $0.30-1.50 (home decor $0.10-0.50, one benchmark's median $1.50). Pinterest's US CPC floor is $0.10.
+MARKET = dict(median_cpc=(0.25, 1.00), spread=0.6, auctions=(50, 400))
 
 
 class SimMarket:
@@ -131,7 +138,8 @@ def make_products(scenario: dict, rng: random.Random, n: int) -> dict:
     return out
 
 
-def trial(scenario: dict, rng: random.Random, overrides: dict, days: int, n_products: int) -> dict:
+def trial(scenario: dict, rng: random.Random, overrides: dict, days: int, n_products: int,
+          network_cr: float | None = None) -> dict:
     with tempfile.TemporaryDirectory() as tmp:
         config = {**DEFAULT_CONFIG, **overrides,
                   "kill_switch_path": os.path.join(tmp, "STOP"),
@@ -143,6 +151,8 @@ def trial(scenario: dict, rng: random.Random, overrides: dict, days: int, n_prod
         st = _empty_state()
         for pid, p in products.items():
             st["products"][pid] = {"name": pid, "expected_commission": round(p["price"] * p["rate"], 2)}
+            if network_cr is not None:  # the network's figure, off by a random factor
+                st["products"][pid]["conversion_rate"] = p["cr"] * math.exp(rng.gauss(0, network_cr))
             st["posted"][f"{pid}:v1"] = {"product_id": pid, "pin_id": f"pin-{pid}"}
         start = date(2026, 1, 1)
         spend = earned = 0.0
@@ -158,11 +168,11 @@ def trial(scenario: dict, rng: random.Random, overrides: dict, days: int, n_prod
         return {"spend": spend, "earned": earned, "profit": earned - spend, "good_products": good}
 
 
-def run(scenarios, trials, seed, overrides, days=60, n_products=5) -> dict:
+def run(scenarios, trials, seed, overrides, days=60, n_products=5, network_cr=None) -> dict:
     results = {}
     for name in scenarios:
         rng = random.Random(f"{seed}-{name}")
-        rs = [trial(SCENARIOS[name], rng, overrides, days, n_products) for _ in range(trials)]
+        rs = [trial(SCENARIOS[name], rng, overrides, days, n_products, network_cr) for _ in range(trials)]
         profits = sorted(r["profit"] for r in rs)
         results[name] = {
             "mean_profit": sum(profits) / trials,
@@ -190,8 +200,16 @@ def main():
     ap.add_argument("--days", type=int, default=60)
     ap.add_argument("--scenario", action="append", choices=list(SCENARIOS))
     ap.add_argument("--set", action="append", default=[], help="config override, e.g. ads_min_bid=0.05")
+    ap.add_argument("--cpc", type=float, nargs=2, metavar=("LOW", "HIGH"),
+                    help="range of each product's median cost per click")
+    ap.add_argument("--network-cr", type=float, metavar="ERROR",
+                    help="give each product its network-reported conversion rate, off by this much "
+                         "(log-normal sigma, e.g. 0.4 is roughly +/-40%%)")
     args = ap.parse_args()
-    res = run(args.scenario or list(SCENARIOS), args.trials, args.seed, _parse_set(args.set), args.days)
+    if args.cpc:
+        MARKET["median_cpc"] = tuple(args.cpc)
+    res = run(args.scenario or list(SCENARIOS), args.trials, args.seed, _parse_set(args.set), args.days,
+              network_cr=args.network_cr)
     print(f"{'scenario':12} {'mean':>8} {'p10':>8} {'median':>8} {'p90':>8} {'win%':>5} "
           f"{'spend':>7} {'earned':>7} {'good/5':>6}")
     for name, r in res.items():
