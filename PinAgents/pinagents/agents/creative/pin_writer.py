@@ -63,14 +63,18 @@ def create_pin_writer(llm, config):
                 f"Reviewer notes: {json.dumps(notes)}\n"
                 f"Rejected pins: {json.dumps(rejected, indent=1)}"
             )
-            targets = [by_id[d["product_id"]] for d in rejected if d["product_id"] in by_id]
             out = llm.json(SYSTEM, user, tier="quick", task="write",
                            payload={"products": [], "niche": state["niche"]})
-            rewritten = [_finalize(p, by_id[str(p["product_id"])], disclosure)
-                         for p in out.get("pins", []) if str(p.get("product_id")) in by_id]
-            # In mock mode nothing comes back; carry rejected pins forward unchanged.
-            if not rewritten and targets:
-                rewritten = rejected
+            rejected_keys = {d["key"] for d in rejected}
+            rewritten = {}
+            for p in out.get("pins", []):
+                if str(p.get("product_id")) in by_id:
+                    d = _finalize(p, by_id[str(p["product_id"])], disclosure)
+                    if d["key"] in rejected_keys:
+                        rewritten[d["key"]] = d
+            # Pins the model skipped (all of them in mock mode) carry forward unchanged, so
+            # compliance rejects them again and they get reported as dropped instead of vanishing.
+            rewritten = list(rewritten.values()) + [d for d in rejected if d["key"] not in rewritten]
             return {"drafts": keep + rewritten, "revision_round": rnd + 1,
                     "log": [f"Pin Writer revised {len(rejected)} pins (round {rnd + 1})."]}
 

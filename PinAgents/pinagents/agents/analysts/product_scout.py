@@ -26,10 +26,11 @@ def create_product_scout(llm, config):
         out = llm.json(SYSTEM, user, tier="quick", task="scout",
                        payload={"products": products, "niche": state["niche"]})
         by_id = {p["id"]: p for p in products}
-        shortlist = []
+        shortlist, seen = [], set()
         for r in sorted(out.get("ranked", []), key=lambda r: -float(r.get("score", 0))):
             prod = by_id.get(str(r.get("id")))
-            if prod and prod not in shortlist:
+            if prod and prod["id"] not in seen:
+                seen.add(prod["id"])
                 shortlist.append({**prod, "score": r.get("score"), "reason": r.get("reason", ""),
                                   "angle": r.get("angle", "")})
             if len(shortlist) >= config["max_products"]:

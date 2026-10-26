@@ -103,3 +103,30 @@ def test_tracker_writes_lessons(tmp_path):
 def test_extract_json():
     assert _extract_json('Sure!\n```json\n{"a": 1}\n```') == {"a": 1}
     assert _extract_json('here: [1, 2] done') == [1, 2]
+
+
+class StubLLM:
+    def __init__(self, reply):
+        self.reply = reply
+
+    def json(self, *args, **kwargs):
+        return self.reply
+
+
+def test_scout_never_shortlists_a_product_twice():
+    from pinagents.agents.analysts.product_scout import create_product_scout
+    products = [{"id": "a", "name": "A"}, {"id": "b", "name": "B"}]
+    llm = StubLLM({"ranked": [{"id": "a", "score": 9}, {"id": "a", "score": 8}, {"id": "b", "score": 7}]})
+    out = create_product_scout(llm, {"max_products": 5})({"products": products, "niche": "x"})
+    assert [p["id"] for p in out["shortlist"]] == ["a", "b"]
+
+
+def test_writer_keeps_rejected_pins_the_model_skipped():
+    from pinagents.agents.creative.pin_writer import create_pin_writer
+    product = {"id": "a", "name": "A", "url": "https://www.example.com/a"}
+    drafts = [{"key": "a-v1", "product_id": "a"}, {"key": "a-v2", "product_id": "a"}]
+    review = {"a-v1": {"ok": False, "issues": ["x"]}, "a-v2": {"ok": False, "issues": ["y"]}}
+    llm = StubLLM({"pins": [{"product_id": "a", "variant": 1, "title": "New", "description": "d"}]})
+    out = create_pin_writer(llm, {"disclosure": DISCLOSURE})(
+        {"shortlist": [product], "drafts": drafts, "review": review, "niche": "x"})
+    assert sorted(d["key"] for d in out["drafts"]) == ["a-v1", "a-v2"]
