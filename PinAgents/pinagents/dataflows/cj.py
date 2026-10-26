@@ -80,6 +80,7 @@ def joined_programs() -> list[dict]:
                     "id": a.findtext("advertiser-id"), "name": a.findtext("advertiser-name") or "",
                     "commission_rate": rate,
                     "epc": _epc(a.findtext("three-month-epc")) or _epc(a.findtext("seven-day-epc")),
+                    "category": (a.findtext("primary-category/child") or a.findtext("primary-category/parent") or "").strip(),
                 })
         if len(found) < 100:
             return programs
@@ -87,20 +88,38 @@ def joined_programs() -> list[dict]:
 
 
 def program_products(program: dict, keywords: list[str]) -> list[dict]:
+    keyword_arg = f"keywords: {json.dumps(keywords)}, " if keywords else ""
     query = f"""{{ shoppingProducts(companyId: "{os.environ['CJ_COMPANY_ID']}",
         partnerIds: ["{program['id']}"], partnerStatus: JOINED,
-        keywords: {json.dumps(keywords)}, limit: {PRODUCTS_PER_PROGRAM}) {{
+        {keyword_arg}limit: {PRODUCTS_PER_PROGRAM}) {{
       resultList {{ id title price {{ amount currency }}
         linkCode(pid: "{os.environ['CJ_WEBSITE_ID']}") {{ clickUrl }} }} }} }}"""
     return _graphql(PRODUCTS, query)["shoppingProducts"]["resultList"] or []
 
 
-def discover(niche: str, out_path: str) -> str:
-    """Write a products CSV from joined CJ programs, best earners per click first."""
+def pick_niche(programs: list[dict]) -> str:
+    """The category whose joined programs earn the most per click, counting commission when EPC is missing."""
+    scores = {}
+    for p in programs:
+        if p["category"]:
+            scores[p["category"]] = max(scores.get(p["category"], 0), p["epc"] or p["commission_rate"] / 100)
+    if not scores:
+        raise ValueError("None of your joined CJ programs lists a category; give --niche.")
+    return max(scores, key=scores.get)
+
+
+def discover(niche: str | None, out_path: str) -> tuple[str, str]:
+    """Write a products CSV from joined CJ programs, best earners per click first.
+
+    With no niche, picks one (pick_niche) and takes products from that category's programs."""
     programs = sorted(joined_programs(), key=lambda p: -(p["epc"] or 0))
+    keywords = niche.split() if niche else []
+    if not niche:
+        niche = pick_niche(programs)
+        programs = [p for p in programs if p["category"] == niche]
     rows = []
     for program in programs:
-        for item in program_products(program, niche.split()):
+        for item in program_products(program, keywords):
             url = ((item.get("linkCode") or {}).get("clickUrl") or "").strip()
             price = item.get("price") or {}
             if not url.startswith("https://") or price.get("currency", "USD") != "USD":
@@ -122,7 +141,7 @@ def discover(niche: str, out_path: str) -> str:
         w = csv.DictWriter(f, fieldnames=list(rows[0]))
         w.writeheader()
         w.writerows(rows[:CANDIDATES])
-    return out_path
+    return out_path, niche
 
 
 def write_earnings(path: str, since: str, today: str) -> None:

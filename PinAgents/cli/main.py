@@ -3,9 +3,11 @@
   pinagents run --niche "home office" --products products.csv
   pinagents track --niche "home office" --sheet results/<run>/tracking.csv
   pinagents economics --conversion 0.05 --order 40 --commission 0.04 --cpc 0.15
-  pinagents autopilot --niche "home office" [--products products.csv] [--loop 24]
+  pinagents check
+  pinagents autopilot [--niche "home office"] [--products products.csv] [--loop 24]
 """
 import argparse
+import os
 import sys
 import time
 
@@ -78,6 +80,8 @@ def cmd_autopilot(args):
     if not args.products and not cj.configured():
         raise ValueError("Give --products, or set CJ_API_TOKEN, CJ_COMPANY_ID and CJ_WEBSITE_ID "
                          "so products are found automatically.")
+    if args.products and not args.niche:
+        raise ValueError("Give --niche with --products.")
     while True:
         try:
             for line in run_cycle(args.niche, args.products, cfg):
@@ -89,6 +93,61 @@ def cmd_autopilot(args):
         if not args.loop:
             return
         time.sleep(args.loop * 3600)
+
+
+def cmd_check(args):
+    """Calls every outside service read-only and reports what works, before any money moves."""
+    import tempfile
+    from datetime import date, timedelta
+
+    from pinagents.dataflows import cj
+    from pinagents.dataflows.pinterest_api import PinterestClient
+
+    cfg = _config(args)
+    client = PinterestClient(cfg)
+    checks = [("Pinterest token refresh", lambda: "refreshed" if client.refresh_access_token()
+               else "skipped (PINTEREST_APP_ID/SECRET/REFRESH_TOKEN not all set)")]
+    if os.getenv("PINTEREST_ACCESS_TOKEN") or os.getenv("PINTEREST_REFRESH_TOKEN"):
+        checks += [
+            ("Pinterest account", lambda: client._request("GET", "/user_account").get("username")),
+            ("Pinterest board", lambda: client._request("GET", f"/boards/{cfg['pinterest_board_id']}")["name"]),
+            ("Pinterest ad account", lambda: client._request(
+                "GET", f"/ad_accounts/{cfg['pinterest_ad_account_id']}")["name"]),
+        ]
+    if cj.configured():
+        found = {}
+
+        def programs():
+            found["programs"] = cj.joined_programs()
+            p = found["programs"][:1]
+            return f"{len(found['programs'])} joined with a sale commission" + (
+                f"; e.g. {p[0]['name']}: {p[0]['commission_rate']:.0%}, EPC {p[0]['epc']}" if p else "")
+
+        def products():
+            items = cj.program_products(found["programs"][0], []) if found.get("programs") else []
+            return f"{len(items)} products" + (f"; e.g. {items[0]['title']}" if items else "")
+
+        def earnings():
+            with tempfile.TemporaryDirectory() as tmp:
+                path = os.path.join(tmp, "e.csv")
+                today = date.today()
+                cj.write_earnings(path, (today - timedelta(days=30)).isoformat(), today.isoformat())
+                with open(path) as f:
+                    return f"{sum(1 for _ in f) - 1} tracked commissions in the last 30 days"
+
+        checks += [("CJ programs", programs), ("CJ products", products), ("CJ commissions", earnings)]
+    else:
+        checks.append(("CJ", lambda: "skipped (CJ_API_TOKEN/CJ_COMPANY_ID/CJ_WEBSITE_ID not set)"))
+
+    failed = 0
+    for name, fn in checks:
+        try:
+            print(f"OK    {name}: {fn()}")
+        except Exception as err:
+            failed += 1
+            print(f"FAIL  {name}: {type(err).__name__}: {err}")
+    if failed:
+        raise ValueError(f"{failed} check(s) failed; fix them before turning on posting or ads.")
 
 
 def cmd_economics(args):
@@ -122,11 +181,14 @@ def main(argv=None):
     t.set_defaults(func=cmd_track)
 
     a = sub.add_parser("autopilot", help="Write, post and advertise pins unattended (one cycle)")
-    a.add_argument("--niche", required=True)
+    a.add_argument("--niche", help="default: picked from your best-earning CJ programs")
     a.add_argument("--products", help="CSV of candidate products (default: find them on CJ)")
     a.add_argument("--provider", choices=["anthropic", "openai", "ollama", "mock"])
     a.add_argument("--loop", type=float, metavar="HOURS", help="Keep running a cycle every HOURS")
     a.set_defaults(func=cmd_autopilot)
+
+    c = sub.add_parser("check", help="Test every outside connection read-only before going live")
+    c.set_defaults(func=cmd_check)
 
     e = sub.add_parser("economics", help="Check whether ads could be profitable")
     e.add_argument("--conversion", type=float, required=True, help="Share of clicks that buy, e.g. 0.05")

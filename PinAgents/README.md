@@ -84,10 +84,14 @@ can see the whole flow before paying for an API key.
 ## Autopilot: no human in the loop
 
 ```bash
-pinagents autopilot --niche "home office"            # one cycle, products found on CJ
-pinagents autopilot --niche "home office" --loop 24  # keep going
+pinagents check                                      # test every connection, read-only
+pinagents autopilot --loop 24                        # niche and products picked from CJ
+pinagents autopilot --niche "home office" --loop 24  # or choose the niche
 pinagents autopilot --niche "home office" --products products.csv  # or use your own list
 ```
+
+Run `pinagents check` first: it calls Pinterest and CJ read-only and prints OK or the exact
+error for each, so a mismatch with either API shows up before anything is posted or spent.
 
 Or run one cycle a day from cron: `15 7 * * * cd /path/to/PinAgents && .venv/bin/pinagents autopilot --niche "home office" --products products.csv >> autopilot.log 2>&1`
 
@@ -98,6 +102,7 @@ Each cycle:
 2. When no pins are waiting, the agents write a new batch (using lessons from earlier results).
    Without `--products`, it first searches every CJ Affiliate program you've joined for products
    matching the niche, best earnings per click first, and passes the top 40 to the Product Scout.
+   Without `--niche`, it picks the category of your best-earning joined programs and keeps it.
 3. Posts the pins that are due, at most `pins_per_day`.
 4. Runs ads, all in plain code:
    - One traffic campaign with Pinterest's own lifetime spend cap set to `ads_total_cap`.
@@ -107,6 +112,8 @@ Each cycle:
      never advertised, and neither are Amazon links (see below).
    - Every dollar of daily budget is authorized by `BudgetGuard` first; real spend from Pinterest
      replaces the authorized amount once a day is over.
+   - Bids are scaled down by how our own ads earn against the network's EPC, pooled across all
+     products and weighted like 5 average sales, so one unlucky week can't crash them.
    - A product is paused when it has 20+ clicks and has earned less than it cost, or when it has
      spent `ads_test_spend_per_product` without proving it earns more than it costs.
    - `~/.pinagents/STOP` pauses the campaign on the next cycle.

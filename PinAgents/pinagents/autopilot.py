@@ -50,7 +50,7 @@ def _days_ago(day: str, n: int) -> str:
     return (date.fromisoformat(day) - timedelta(days=n)).isoformat()
 
 
-def run_cycle(niche: str, products_csv: str | None, config: dict, client=None,
+def run_cycle(niche: str | None, products_csv: str | None, config: dict, client=None,
               today: str | None = None) -> list[str]:
     today = today or date.today().isoformat()
     client = client or PinterestClient(config)
@@ -72,11 +72,13 @@ def run_cycle(niche: str, products_csv: str | None, config: dict, client=None,
     try:
         if client.ads_live:
             _drop_dry_ads(st)
+        niche = niche or st.get("niche")  # an automatically picked niche sticks between batches
         if not st["queue"]:
             if not products_csv:
-                products_csv = cj.discover(niche, os.path.join(config["results_dir"], f"cj_products_{today}.csv"))
-                log.append(f"Found products on CJ ({products_csv}).")
+                products_csv, niche = cj.discover(niche, os.path.join(config["results_dir"], f"cj_products_{today}.csv"))
+                log.append(f"Found products on CJ for '{niche}' ({products_csv}).")
             _generate(st, niche, products_csv, config, today, log)
+        st["niche"] = niche
         _post_due(st, client, config, today, log)
         if cj.configured():
             config = {**config, "earnings_csv": config["earnings_csv"] or config["cj_earnings_path"]}

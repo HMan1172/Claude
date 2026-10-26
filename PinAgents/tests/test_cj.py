@@ -13,6 +13,7 @@ LOOKUP_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
   <advertiser-id>111</advertiser-id><advertiser-name>Rug Co</advertiser-name>
   <three-month-epc>45.00</three-month-epc><seven-day-epc>50.00</seven-day-epc>
   <relationship-status>joined</relationship-status>
+  <primary-category><parent>Home &amp; Garden</parent><child>Rugs</child></primary-category>
   <actions><action><name>Online Sale</name><type>advanced sale</type><id>1</id>
    <commission><default type="item-level">12.00%</default></commission></action></actions>
  </advertiser>
@@ -60,11 +61,13 @@ def fake_cj(monkeypatch):
 
 def test_joined_programs_reads_sale_commission_and_epc(fake_cj):
     programs = cj.joined_programs()
-    assert programs == [{"id": "111", "name": "Rug Co", "commission_rate": 0.12, "epc": 0.45}]
+    assert programs == [{"id": "111", "name": "Rug Co", "commission_rate": 0.12, "epc": 0.45,
+                         "category": "Rugs"}]
 
 
 def test_discover_writes_a_products_csv(fake_cj, tmp_path):
-    path = cj.discover("home decor", str(tmp_path / "p.csv"))
+    path, niche = cj.discover("home decor", str(tmp_path / "p.csv"))
+    assert niche == "home decor"
     products = load_products(path)
     assert [p["id"] for p in products] == ["cj9001"]   # the http link was dropped
     p = products[0]
@@ -120,3 +123,26 @@ def test_bids_drop_when_ads_earn_less_than_network_epc(fake_cj, tmp_path):
     assert st["epc_factor"] == pytest.approx(77.4 / 257.4, rel=1e-3)
     assert st["groups"]["cj9001"]["bid"] == c["ads_min_bid"]   # 0.18 x 0.30 = 0.05, held at the minimum
     assert ("bid", st["groups"]["cj9001"]["id"], c["ads_min_bid"]) in client.calls
+
+
+def test_autopilot_picks_its_own_niche(fake_cj, tmp_path, monkeypatch):
+    queries = []
+    real_post = cj.requests.post
+    monkeypatch.setattr(cj.requests, "post", lambda url, **kw: queries.append(kw["json"]["query"]) or real_post(url, **kw))
+    c, client = full_config(tmp_path, earnings_csv=""), FakeClient()
+    c["cj_earnings_path"] = str(tmp_path / "cj_earnings.csv")
+    log = run_cycle(None, None, c, client, today="2026-10-25")
+    assert state(tmp_path)["niche"] == "Rugs"
+    assert any("'Rugs'" in line for line in log)
+    assert "keywords" not in next(q for q in queries if "shoppingProducts" in q)  # whole catalog
+
+
+def test_check_command_reports_each_service(fake_cj, monkeypatch, capsys):
+    from cli.main import main
+    monkeypatch.delenv("PINTEREST_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("PINTEREST_REFRESH_TOKEN", raising=False)
+    assert main(["check"]) == 0
+    out = capsys.readouterr().out
+    assert "OK    CJ programs: 1 joined" in out and "Rug Co: 12%" in out
+    assert "OK    CJ products: 2 products" in out
+    assert "OK    CJ commissions:" in out
