@@ -35,9 +35,12 @@ class FakeClient:
         self.calls.append(("group", name, daily_budget, max_cpc))
         return self._id("g")
 
-    def create_ad(self, ad_group_id, pin_id, name):
-        self.calls.append(("ad", ad_group_id, pin_id))
+    def create_ad(self, ad_group_id, pin_id, name, destination_url=None):
+        self.calls.append(("ad", ad_group_id, pin_id, destination_url))
         return self._id("ad")
+
+    def update_ad_group(self, ad_group_id, max_cpc):
+        self.calls.append(("bid", ad_group_id, max_cpc))
 
     def set_status(self, kind, ids, status):
         self.calls.append(("status", kind, tuple(ids), status))

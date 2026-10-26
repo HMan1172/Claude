@@ -88,3 +88,35 @@ def test_autopilot_runs_without_a_products_csv(fake_cj, tmp_path):
     group = state(tmp_path)["groups"]["cj9001"]
     assert group["status"] == "ACTIVE" and group["bid"] == 0.18   # $0.45 EPC x 0.4
     assert (tmp_path / "cj_earnings.csv").exists()
+
+
+def test_ads_track_their_own_sales(fake_cj, tmp_path):
+    c, client = full_config(tmp_path, earnings_csv=""), FakeClient()
+    c["cj_earnings_path"] = str(tmp_path / "cj_earnings.csv")
+    run_cycle("home decor", None, c, client, today="2026-10-25")
+    run_cycle("home decor", None, c, client, today="2026-10-26")
+    ad = [x for x in client.calls if x[0] == "ad"][0]
+    assert ad[3].endswith("&sid=cj9001-ad")                 # ad link differs from the pin's
+    # The fake report has a $15.48 free-pin sale for cj9001 and nothing tagged -ad, so after the
+    # test budget the ads must stop rather than take credit for the free pin's sale.
+    st = state(tmp_path)
+    for ad_id in st["ads"].values():
+        client.stats[ad_id] = {"spend": 10.0, "clicks": 40, "impressions": 4000}
+    run_cycle("home decor", None, c, client, today="2026-10-27")
+    group = state(tmp_path)["groups"]["cj9001"]
+    assert group["status"] == "PAUSED" and "without proving" in group["reason"]
+
+
+def test_bids_drop_when_ads_earn_less_than_network_epc(fake_cj, tmp_path):
+    c, client = full_config(tmp_path, earnings_csv=""), FakeClient()
+    c["cj_earnings_path"] = str(tmp_path / "cj_earnings.csv")
+    run_cycle("home decor", None, c, client, today="2026-10-25")
+    run_cycle("home decor", None, c, client, today="2026-10-26")
+    for ad_id in state(tmp_path)["ads"].values():   # 400 clicks, cheap enough to stay under test budget
+        client.stats[ad_id] = {"spend": 4.0, "clicks": 200, "impressions": 9000}
+    run_cycle("home decor", None, c, client, today="2026-10-27")
+    st = state(tmp_path)
+    # Predicted 400 x $0.45 = $180, earned $0 on ads; prior is 5 sales x $15.48 commission.
+    assert st["epc_factor"] == pytest.approx(77.4 / 257.4, rel=1e-3)
+    assert st["groups"]["cj9001"]["bid"] == c["ads_min_bid"]   # 0.18 x 0.30 = 0.05, held at the minimum
+    assert ("bid", st["groups"]["cj9001"]["id"], c["ads_min_bid"]) in client.calls

@@ -69,7 +69,10 @@ class SimMarket:
         self.groups[gid] = {"pid": name.split()[-1], "budget": daily_budget, "bid": max_cpc, "active": True}
         return gid
 
-    def create_ad(self, ad_group_id, pin_id, name):
+    def update_ad_group(self, ad_group_id, max_cpc=None):
+        self.groups[ad_group_id]["bid"] = max_cpc
+
+    def create_ad(self, ad_group_id, pin_id, name, destination_url=None):
         aid = self._id("ad")
         self.ads[aid] = {"gid": ad_group_id, "spend": 0.0, "clicks": 0, "impressions": 0}
         return aid
@@ -139,7 +142,7 @@ def make_products(scenario: dict, rng: random.Random, n: int) -> dict:
 
 
 def trial(scenario: dict, rng: random.Random, overrides: dict, days: int, n_products: int,
-          network_cr: float | None = None) -> dict:
+          network_cr: float | None = None, network_epc: tuple | None = None) -> dict:
     with tempfile.TemporaryDirectory() as tmp:
         config = {**DEFAULT_CONFIG, **overrides,
                   "kill_switch_path": os.path.join(tmp, "STOP"),
@@ -153,7 +156,11 @@ def trial(scenario: dict, rng: random.Random, overrides: dict, days: int, n_prod
             st["products"][pid] = {"name": pid, "expected_commission": round(p["price"] * p["rate"], 2)}
             if network_cr is not None:  # the network's figure, off by a random factor
                 st["products"][pid]["conversion_rate"] = p["cr"] * math.exp(rng.gauss(0, network_cr))
-            st["posted"][f"{pid}:v1"] = {"product_id": pid, "pin_id": f"pin-{pid}"}
+            if network_epc is not None:  # network EPC: true EPC x (bias, noise)
+                true_epc = p["cr"] * p["price"] * sum(p["cart"]) / 2 * p["rate"]
+                st["products"][pid]["epc"] = true_epc * network_epc[0] * math.exp(rng.gauss(0, network_epc[1]))
+            st["posted"][f"{pid}:v1"] = {"product_id": pid, "pin_id": f"pin-{pid}",
+                                         "link": f"https://example.com/{pid}"}
         start = date(2026, 1, 1)
         spend = earned = 0.0
         for d in range(days):

@@ -116,9 +116,18 @@ class PinterestClient:
             "targeting_spec": {"LOCATION": self.config["ads_countries"]},
         })
 
-    def create_ad(self, ad_group_id: str, pin_id: str, name: str) -> str:
-        return self._batch_create("ads", {"ad_group_id": ad_group_id, "pin_id": pin_id,
-                                          "creative_type": "REGULAR", "status": "ACTIVE", "name": name})
+    def create_ad(self, ad_group_id: str, pin_id: str, name: str, destination_url: str | None = None) -> str:
+        ad = {"ad_group_id": ad_group_id, "pin_id": pin_id, "creative_type": "REGULAR",
+              "status": "ACTIVE", "name": name}
+        if destination_url:
+            ad["destination_url"] = destination_url
+        return self._batch_create("ads", ad)
+
+    def update_ad_group(self, ad_group_id: str, max_cpc: float) -> None:
+        if not self.ads_live or ad_group_id.startswith("dry-"):
+            return
+        self._request("PATCH", f"/ad_accounts/{self.ad_account}/ad_groups",
+                      json=[{"id": ad_group_id, "bid_in_micro_currency": int(max_cpc * MICRO)}])
 
     def set_status(self, kind: str, ids: list[str], status: str) -> None:
         """kind is "campaigns" or "ad_groups"; status is "ACTIVE" or "PAUSED"."""

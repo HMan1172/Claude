@@ -27,6 +27,10 @@ from .output import save_run
 from .tracker import MIN_CLICKS, analyze
 
 STATS_DAYS = 89  # Pinterest analytics only go back 90 days
+# Network EPC comes from all publishers' traffic, which often buys more readily than Pinterest ad
+# clicks. Bids are scaled down by what our own ads have earned against it, pooled across products
+# and weighted like this many average sales of evidence, so a few unlucky days can't crash bids.
+CALIBRATION_SALES = 5
 # Bid 40% of what a click should earn. On a fixed daily budget, lower bids buy cheaper clicks;
 # experiments/simulate.py found 60% beat 30% across cheap, typical and expensive markets.
 BID_MARGIN = 0.6
@@ -146,6 +150,50 @@ def _load_earnings(path: str, since: str) -> dict:
     return totals
 
 
+def _calibrate_bids(st, client, by_product, earnings, config) -> None:
+    """Lower every bid by the pooled ratio of ad earnings to what network EPC predicted (never raise)."""
+    expected = earned = 0.0
+    commissions = []
+    for pid, g in st["groups"].items():
+        if "id" not in g:
+            continue
+        prod = st["products"].get(pid, {})
+        expected += by_product.get(pid, {"clicks": 0})["clicks"] * _base_epc(prod, config)
+        earned += _ad_earnings(earnings, pid, g) or 0.0
+        commissions.append(prod.get("expected_commission", 0))
+    prior = CALIBRATION_SALES * (sum(commissions) / len(commissions) if commissions else 0)
+    st["epc_factor"] = min(1.0, (earned + prior) / (expected + prior)) if prior else 1.0
+    for pid, g in st["groups"].items():
+        if g["status"] != "ACTIVE":
+            continue
+        # Stopping a product stays with _verdict; calibration only moves bids, never below the minimum.
+        bid = max(config["ads_min_bid"],
+                  round(max_cpc(_base_epc(st["products"].get(pid, {}), config) * st["epc_factor"], BID_MARGIN), 2))
+        if bid != g["bid"]:
+            client.update_ad_group(g["id"], max_cpc=bid)
+            g["bid"] = bid
+
+
+def _base_epc(prod: dict, config) -> float:
+    """Expected earnings per click before our own results: network EPC, else conversion x commission."""
+    cr = prod.get("conversion_rate") or config["assumed_conversion_rate"]
+    return prod.get("epc") or cr * prod.get("expected_commission", 0)
+
+
+def _ad_link(link: str, pid: str) -> str | None:
+    """The pin's link with its sid tag changed to "<id>-ad", so ad sales are reported apart from
+    free-pin sales. None when the link carries no sid tag to change."""
+    tag = f"sid={pid}"
+    if tag not in link or f"{tag}-" in link:
+        return None
+    return link.replace(tag, f"{tag}-ad")
+
+
+def _ad_earnings(earnings: dict, pid: str, group: dict):
+    """Ad-driven earnings for a product: its "-ad" sid when the ad link was tagged."""
+    return earnings.get(f"{pid}-ad") if group.get("ad_tagged") else earnings.get(pid)
+
+
 def _verdict(spend: float, clicks: float, earned, config) -> str:
     """Why a product's ads should stop, or "" to keep going."""
     if earned is not None and clicks >= MIN_CLICKS:
@@ -188,11 +236,13 @@ def _run_ads(st, client, guard, config, today, log) -> dict:
         if g["status"] != "ACTIVE":
             continue
         t = by_product.get(pid, {"spend": 0.0, "clicks": 0})
-        why = _verdict(t["spend"], t["clicks"], earnings.get(pid), config)
+        why = _verdict(t["spend"], t["clicks"], _ad_earnings(earnings, pid, g), config)
         if why:
             client.set_status("ad_groups", [g["id"]], "PAUSED")
             g.update(status="PAUSED", reason=why)
             log.append(f"Paused ads for {pid}: {why}.")
+
+    _calibrate_bids(st, client, by_product, earnings, config)
 
     # 3. Authorize today's budget for ad groups already running.
     active = [g for g in st["groups"].values() if g["status"] == "ACTIVE"]
@@ -216,9 +266,7 @@ def _run_ads(st, client, guard, config, today, log) -> dict:
             log.append(f"Not advertising {pid}: {st['groups'][pid]['reason']}.")
             continue
         if pid not in st["groups"]:
-            prod = st["products"].get(pid, {})
-            cr = prod.get("conversion_rate") or config["assumed_conversion_rate"]
-            epc = prod.get("epc") or cr * prod.get("expected_commission", 0)
+            epc = _base_epc(st["products"].get(pid, {}), config) * st.get("epc_factor", 1.0)
             bid = round(max_cpc(epc, BID_MARGIN), 2)
             if bid < config["ads_min_bid"]:
                 st["groups"][pid] = {"status": "SKIPPED",
@@ -234,10 +282,12 @@ def _run_ads(st, client, guard, config, today, log) -> dict:
                 cid = client.create_campaign(f"PinAgents {today}", config["ads_total_cap"])
                 st["campaign"] = {"id": cid, "status": "ACTIVE"}
             st["groups"][pid] = {"id": client.create_ad_group(cid, f"PinAgents {pid}", budget, bid),
-                                 "status": "ACTIVE", "budget": budget, "bid": bid}
+                                 "status": "ACTIVE", "budget": budget, "bid": bid,
+                                 "ad_tagged": _ad_link(p["link"], pid) is not None}
             log.append(f"Started ads for {pid}: ${budget:.2f}/day, max ${bid:.2f} per click.")
         if st["groups"][pid]["status"] == "ACTIVE":
-            st["ads"][key] = client.create_ad(st["groups"][pid]["id"], p["pin_id"], key)
+            st["ads"][key] = client.create_ad(st["groups"][pid]["id"], p["pin_id"], key,
+                                              destination_url=_ad_link(p["link"], pid))
     return stats
 
 
@@ -257,7 +307,8 @@ def _learn(st, stats, niche, config, today, log):
         rows.append({"pin_key": key, "product_id": p["product_id"], "title": p["title"],
                      "posted_date": p["posted_date"], "impressions": s["impressions"],
                      "outbound_clicks": s["clicks"], "saves": 0,
-                     "earnings": round(earnings.get(p["product_id"], 0.0) * share, 2)})
+                     "earnings": round((_ad_earnings(earnings, p["product_id"],
+                                                     st["groups"][p["product_id"]]) or 0.0) * share, 2)})
     if not rows:
         return
     os.makedirs(config["results_dir"], exist_ok=True)
