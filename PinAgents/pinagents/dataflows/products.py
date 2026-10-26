@@ -11,7 +11,8 @@ def _rate(value: str) -> float:
 
 
 def load_products(path: str) -> list[dict]:
-    """Read products.csv. commission_rate (and optional conversion_rate) can be 0.04 or 4%."""
+    """Read products.csv. commission_rate (and optional conversion_rate) can be 0.04 or 4%.
+    Optional epc is the program's earnings per click in dollars, as the network reports it."""
     products = []
     with open(path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -35,6 +36,7 @@ def load_products(path: str) -> list[dict]:
                 "domain": urlparse(row["url"].strip()).netloc.lower(),
                 # Share of clicks that buy, as your affiliate network reports it for this program.
                 "conversion_rate": _rate(row["conversion_rate"]) if (row.get("conversion_rate") or "").strip() else None,
+                "epc": float(row["epc"]) if (row.get("epc") or "").strip() else None,
             })
     if not products:
         raise ValueError(f"No products found in {path}")

@@ -48,6 +48,8 @@ DEFAULT_CONFIG = {
     "ads_countries": ["US"],
     # CSV of product_id,earnings from your affiliate network (cumulative, from ad links only).
     "earnings_csv": os.getenv("PINAGENTS_EARNINGS_CSV", ""),
+    # Where CJ earnings are written when CJ_API_TOKEN etc. are set and earnings_csv is empty.
+    "cj_earnings_path": os.path.expanduser("~/.pinagents/cj_earnings.csv"),
 }
 
 DEFAULT_MODELS = {

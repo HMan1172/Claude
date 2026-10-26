@@ -3,7 +3,7 @@
   pinagents run --niche "home office" --products products.csv
   pinagents track --niche "home office" --sheet results/<run>/tracking.csv
   pinagents economics --conversion 0.05 --order 40 --commission 0.04 --cpc 0.15
-  pinagents autopilot --niche "home office" --products products.csv [--loop 24]
+  pinagents autopilot --niche "home office" [--products products.csv] [--loop 24]
 """
 import argparse
 import sys
@@ -72,7 +72,12 @@ def cmd_track(args):
 def cmd_autopilot(args):
     from pinagents.autopilot import run_cycle
 
+    from pinagents.dataflows import cj
+
     cfg = _config(args)
+    if not args.products and not cj.configured():
+        raise ValueError("Give --products, or set CJ_API_TOKEN, CJ_COMPANY_ID and CJ_WEBSITE_ID "
+                         "so products are found automatically.")
     while True:
         try:
             for line in run_cycle(args.niche, args.products, cfg):
@@ -118,7 +123,7 @@ def main(argv=None):
 
     a = sub.add_parser("autopilot", help="Write, post and advertise pins unattended (one cycle)")
     a.add_argument("--niche", required=True)
-    a.add_argument("--products", required=True, help="CSV of candidate products")
+    a.add_argument("--products", help="CSV of candidate products (default: find them on CJ)")
     a.add_argument("--provider", choices=["anthropic", "openai", "ollama", "mock"])
     a.add_argument("--loop", type=float, metavar="HOURS", help="Keep running a cycle every HOURS")
     a.set_defaults(func=cmd_autopilot)

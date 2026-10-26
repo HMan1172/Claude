@@ -84,8 +84,9 @@ can see the whole flow before paying for an API key.
 ## Autopilot: no human in the loop
 
 ```bash
-pinagents autopilot --niche "home office" --products products.csv            # one cycle
-pinagents autopilot --niche "home office" --products products.csv --loop 24  # keep going
+pinagents autopilot --niche "home office"            # one cycle, products found on CJ
+pinagents autopilot --niche "home office" --loop 24  # keep going
+pinagents autopilot --niche "home office" --products products.csv  # or use your own list
 ```
 
 Or run one cycle a day from cron: `15 7 * * * cd /path/to/PinAgents && .venv/bin/pinagents autopilot --niche "home office" --products products.csv >> autopilot.log 2>&1`
@@ -95,6 +96,8 @@ Each cycle:
 1. Refreshes the Pinterest access token (needs `PINTEREST_APP_ID`, `PINTEREST_APP_SECRET`,
    `PINTEREST_REFRESH_TOKEN` once; the rotating refresh token is then kept in `~/.pinagents/`).
 2. When no pins are waiting, the agents write a new batch (using lessons from earlier results).
+   Without `--products`, it first searches every CJ Affiliate program you've joined for products
+   matching the niche, best earnings per click first, and passes the top 40 to the Product Scout.
 3. Posts the pins that are due, at most `pins_per_day`.
 4. Runs ads, all in plain code:
    - One traffic campaign with Pinterest's own lifetime spend cap set to `ads_total_cap`.
@@ -112,10 +115,17 @@ Each cycle:
 Until you set `PINAGENTS_ALLOW_POSTING=1` / `PINAGENTS_ALLOW_ADS=1` (plus a token, board and ad
 account), it is a dry run with its own state and ledger files, so you can watch a few cycles first.
 
-**Earnings data.** Affiliate networks don't share one API, so autopilot reads
-`PINAGENTS_EARNINGS_CSV` (`product_id,date,earnings`). Have your network's export or report
-script write it. Use a separate tracking ID for ad links so it only counts ad-driven sales.
-Without it, no product can prove it's profitable, so each one stops after its $20 test budget.
+**Products and earnings from CJ.** With `CJ_API_TOKEN`, `CJ_COMPANY_ID` and `CJ_WEBSITE_ID` set,
+autopilot finds products itself and pulls earnings every cycle from CJ's commission report. Each
+product's link carries its own `sid`, so sales are matched to products automatically, and the
+program's EPC sets the bid. Two limits: it can only use programs you've joined (each advertiser
+approves its own publishers, often by hand), and it can't tell ad sales from free-pin sales of the
+same pin, so ads look a little better than they are. CJ's EPC also comes from all its publishers'
+traffic, which usually converts better than cold Pinterest ad clicks; the 40% bid margin covers part of that.
+
+Other networks: write `PINAGENTS_EARNINGS_CSV` (`product_id,date,earnings`) from your network's
+report. Without earnings data, no product can prove it's profitable, so each one stops after its
+$20 test budget.
 
 **Know before you switch ads on.**
 - Amazon Associates' agreement (effective April 14, 2026) disqualifies purchases referred through

@@ -2,7 +2,8 @@
 
 Each cycle:
   1. Refreshes the Pinterest token so unattended runs never lock out.
-  2. When no pins are waiting, has the agents write a new batch.
+  2. When no pins are waiting, has the agents write a new batch (from products found on CJ when
+     no products CSV is given).
   3. Posts the pins that are due (at most pins_per_day).
   4. Ads: syncs real spend into BudgetGuard, pauses products that lose money or use up their
      test budget without proving themselves, authorizes today's budget, and promotes new pins.
@@ -16,6 +17,7 @@ import os
 from datetime import date, timedelta
 
 from .budget_guard import BudgetGuard, SpendRefused
+from .dataflows import cj
 from .dataflows.pinterest_api import PinterestClient
 from .dataflows.reports import TRACKING_COLUMNS
 from .economics import max_cpc
@@ -44,7 +46,8 @@ def _days_ago(day: str, n: int) -> str:
     return (date.fromisoformat(day) - timedelta(days=n)).isoformat()
 
 
-def run_cycle(niche: str, products_csv: str, config: dict, client=None, today: str | None = None) -> list[str]:
+def run_cycle(niche: str, products_csv: str | None, config: dict, client=None,
+              today: str | None = None) -> list[str]:
     today = today or date.today().isoformat()
     client = client or PinterestClient(config)
     log = []
@@ -66,8 +69,14 @@ def run_cycle(niche: str, products_csv: str, config: dict, client=None, today: s
         if client.ads_live:
             _drop_dry_ads(st)
         if not st["queue"]:
+            if not products_csv:
+                products_csv = cj.discover(niche, os.path.join(config["results_dir"], f"cj_products_{today}.csv"))
+                log.append(f"Found products on CJ ({products_csv}).")
             _generate(st, niche, products_csv, config, today, log)
         _post_due(st, client, config, today, log)
+        if cj.configured():
+            config = {**config, "earnings_csv": config["earnings_csv"] or config["cj_earnings_path"]}
+            cj.write_earnings(config["earnings_csv"], _days_ago(today, STATS_DAYS), today)
         stats = _run_ads(st, client, guard, config, today, log)
         if stats and (not st["last_lessons"] or st["last_lessons"] <= _days_ago(today, 7)):
             _learn(st, stats, niche, config, today, log)
@@ -93,7 +102,8 @@ def _generate(st, niche, products_csv, config, today, log):
     run_dir = save_run(state, config)
     for s in state.get("shortlist", []):
         st["products"][s["id"]] = {"name": s["name"], "expected_commission": s["expected_commission"],
-                                   "domain": s["domain"], "conversion_rate": s.get("conversion_rate")}
+                                   "domain": s["domain"], "conversion_rate": s.get("conversion_rate"),
+                                   "epc": s.get("epc")}
     pins = state.get("final", {}).get("pins", [])
     for p in pins:
         st["queue"].append({
@@ -208,7 +218,7 @@ def _run_ads(st, client, guard, config, today, log) -> dict:
         if pid not in st["groups"]:
             prod = st["products"].get(pid, {})
             cr = prod.get("conversion_rate") or config["assumed_conversion_rate"]
-            epc = cr * prod.get("expected_commission", 0)
+            epc = prod.get("epc") or cr * prod.get("expected_commission", 0)
             bid = round(max_cpc(epc, BID_MARGIN), 2)
             if bid < config["ads_min_bid"]:
                 st["groups"][pid] = {"status": "SKIPPED",
