@@ -62,7 +62,7 @@ def fake_cj(monkeypatch):
 def test_joined_programs_reads_sale_commission_and_epc(fake_cj):
     programs = cj.joined_programs()
     assert programs == [{"id": "111", "name": "Rug Co", "commission_rate": 0.12, "epc": 0.45,
-                         "category": "Rugs"}]
+                         "category": "Rugs", "site": ""}]
 
 
 def test_discover_writes_a_products_csv(fake_cj, tmp_path):
@@ -221,3 +221,31 @@ def test_earnings_survive_cj_rejecting_click_dates(fake_cj, monkeypatch, tmp_pat
     monkeypatch.setattr(cj.http, "request", post)
     cj.write_earnings(str(tmp_path / "e.csv"), "2026-10-20", "2026-10-26")
     assert "cj9001,2026-10-20,15.48," in (tmp_path / "e.csv").read_text()
+
+
+def test_join_list_ranks_unjoined_programs_in_the_niche_first(fake_cj, monkeypatch, tmp_path):
+    notjoined = b"""<cj-api><advertisers>
+     <advertiser><advertiser-id>7</advertiser-id><advertiser-name>Big Lamps</advertiser-name>
+      <program-url>https://biglamps.example</program-url><three-month-epc>90.00</three-month-epc>
+      <primary-category><child>Lighting</child></primary-category>
+      <actions><action><type>sale</type><commission><default>8%</default></commission></action></actions></advertiser>
+     <advertiser><advertiser-id>8</advertiser-id><advertiser-name>Rug Outlet</advertiser-name>
+      <three-month-epc>30.00</three-month-epc><primary-category><child>Rugs</child></primary-category>
+      <actions><action><type>sale</type><commission><default>15%</default></commission></action></actions></advertiser>
+    </advertisers></cj-api>"""
+    seen = []
+    monkeypatch.setattr(cj.http, "request", lambda method, url, **kw: seen.append(kw["params"]["advertiser-ids"]) or Resp(content=notjoined))
+    assert cj.write_join_list("Rugs", str(tmp_path / "join.md")) == 2
+    text = (tmp_path / "join.md").read_text()
+    assert seen == ["notjoined"]
+    assert text.index("Rug Outlet") < text.index("Big Lamps")          # niche fit beats higher EPC
+    assert "| [Big Lamps](https://biglamps.example) | 7 | Lighting | 8% | $0.90 |" in text
+
+
+def test_autopilot_writes_the_join_list_weekly(fake_cj, tmp_path):
+    c, client = full_config(tmp_path, earnings_csv=""), FakeClient()
+    c["cj_earnings_path"] = str(tmp_path / "cj_earnings.csv")
+    log = run_cycle("Rugs", None, c, client, today="2026-10-25")
+    assert any("worth joining" in line for line in log)
+    assert not any("worth joining" in line for line in run_cycle("Rugs", None, c, client, today="2026-10-28"))
+    assert any("worth joining" in line for line in run_cycle("Rugs", None, c, client, today="2026-11-01"))

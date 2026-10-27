@@ -138,7 +138,9 @@ autopilot finds products itself and pulls earnings every cycle from CJ's commiss
 product's link carries its own `sid`, so sales are matched to products automatically, and the
 program's EPC sets the bid. Ads use the same link with `sid=<id>-ad`, so ad sales are counted
 apart from free-pin sales. It can only use programs you've joined: each advertiser approves its
-own publishers, often by hand.
+own publishers, often by hand. So once a week it writes `results/join_list.md`, the programs you
+haven't joined ranked by earnings per click (those in your niche first), with their CJ IDs to
+apply to; anything that accepts you is used from the next batch.
 
 Other networks: write `PINAGENTS_EARNINGS_CSV` (`product_id,date,earnings`) from your network's
 report. Without earnings data, no product can prove it's profitable, so each one stops after its

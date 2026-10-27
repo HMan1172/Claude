@@ -88,10 +88,15 @@ def _epc(text) -> float | None:
 
 
 def joined_programs() -> list[dict]:
+    return _programs("joined")
+
+
+def _programs(relationship: str, max_pages: int = 1000) -> list[dict]:
+    """Programs with a percentage sale commission; relationship is "joined" or "notjoined"."""
     programs, page = [], 1
-    while True:
+    while page <= max_pages:
         resp = http.request("GET", LOOKUP, headers=_headers(), timeout=60, params={
-            "requestor-cid": os.environ["CJ_COMPANY_ID"], "advertiser-ids": "joined",
+            "requestor-cid": os.environ["CJ_COMPANY_ID"], "advertiser-ids": relationship,
             "records-per-page": 100, "page-number": page})
         found = ET.fromstring(resp.content).findall(".//advertiser")
         for a in found:
@@ -102,10 +107,35 @@ def joined_programs() -> list[dict]:
                     "commission_rate": rate,
                     "epc": _epc(a.findtext("three-month-epc")) or _epc(a.findtext("seven-day-epc")),
                     "category": (a.findtext("primary-category/child") or a.findtext("primary-category/parent") or "").strip(),
+                    "site": (a.findtext("program-url") or "").strip(),
                 })
         if len(found) < 100:
-            return programs
+            break
         page += 1
+    return programs
+
+
+def write_join_list(niche: str, path: str, limit: int = 20) -> int:
+    """Rank programs you haven't joined by earnings per click, those in the niche first, and write
+    them to a Markdown checklist. Joining stays a click in CJ: advertisers approve their publishers."""
+    words = set(re.findall(r"[a-z0-9]+", niche.lower()))
+    fits = lambda p: bool(words & set(re.findall(r"[a-z0-9]+", p["category"].lower())))
+    ranked = sorted(_programs("notjoined", max_pages=10),
+                    key=lambda p: (not fits(p), -(p["epc"] or 0), -p["commission_rate"]))[:limit]
+    lines = [f"# CJ programs worth joining for '{niche}'", "",
+             "In CJ, open Advertisers, search each ID below and click Apply. Programs that accept you",
+             "are used automatically from the next batch.", "",
+             "| Advertiser | ID | Category | Commission | EPC per click | In niche |", "|---|---|---|---|---|---|"]
+    for p in ranked:
+        epc = f"${p['epc']:.2f}" if p["epc"] is not None else "n/a"
+        clean = p["name"].replace("|", "/")  # a "|" would break the table
+        name = f"[{clean}]({p['site']})" if p["site"].startswith("http") else clean
+        lines.append(f"| {name} | {p['id']} | {p['category']} | {p['commission_rate']:.0%} | {epc} | "
+                     f"{'yes' if fits(p) else ''} |")
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    return len(ranked)
 
 
 def lookup_sample() -> str:

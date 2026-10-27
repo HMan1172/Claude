@@ -104,6 +104,11 @@ def run_cycle(niche: str | None, products_csv: str | None, config: dict, client=
         if cj.configured():
             config = {**config, "earnings_csv": config["earnings_csv"] or config["cj_earnings_path"]}
             cj.write_earnings(config["earnings_csv"], _days_ago(today, STATS_DAYS), today)
+            if niche and (st.get("last_join_list") or "") <= _days_ago(today, 7):
+                path = os.path.join(config["results_dir"], "join_list.md")
+                n = cj.write_join_list(niche, path)
+                st["last_join_list"] = today
+                log.append(f"Ranked {n} CJ programs worth joining in {path}; joining takes a click in CJ.")
         stats = _run_ads(st, client, guard, config, today, log, save)
         if stats and (not st["last_lessons"] or st["last_lessons"] <= _days_ago(today, 7)):
             _learn(st, stats, niche, config, today, log)
