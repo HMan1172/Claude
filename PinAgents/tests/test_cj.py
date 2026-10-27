@@ -361,7 +361,7 @@ def test_repeated_earnings_failures_raise_attention_and_pause_failures_are_logge
     def unreachable(*a, **kw):
         raise requests.ConnectionError("pinterest unreachable")
     client.set_status = unreachable
-    logs = [run_cycle("Rugs", None, c, client, today=f"2026-10-{d}") for d in (27, 28, 29)]
-    assert any("couldn't pause the campaign" in line for line in logs[0])
-    assert not any("ATTENTION: the earnings report" in line for line in logs[1])
-    assert any("failed 3 cycles in a row" in line for line in logs[2])
+    logs = [run_cycle("Rugs", None, c, client, today=f"2026-10-{d}") for d in (27, 27, 28, 29)]
+    assert any("campaign is still running" in line for line in logs[0])
+    assert not any("likely not an outage" in line for line in logs[1] + logs[2])   # counts days, not cycles
+    assert any("failed since 2026-10-27" in line and "are still running" in line for line in logs[3])

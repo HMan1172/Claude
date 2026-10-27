@@ -30,7 +30,7 @@ PRODUCTS_PER_PROGRAMME = 25
 CANDIDATES = 40
 DETAIL_LOOKUPS = 15  # programmedetails calls per discover or join list
 MAX_ROWS_SCANNED = 20_000  # per feed; some feeds hold hundreds of thousands of products
-MAX_FEEDS_SCANNED = 20  # per discover, so a niche matching nothing can't mean downloading every feed
+MAX_FEEDS_SCANNED = 60  # per discover, so a niche matching nothing can't mean downloading every feed
 API_SPACING = 3.1  # seconds between api.awin.com calls: Awin allows 20 a minute
 DROPPED_STATUSES = {"declined", "deleted"}
 _last_call = [0.0]
@@ -88,11 +88,14 @@ def discover(niche: str, out_path: str) -> str:
         scanned += 1
         try:
             hits, rest = _feed_products(f["Feed ID"].lstrip("Ff"), words)
-            if (hits or rest) and adv not in rates:
-                lookups += 1
-                rates[adv] = commission_rate(adv)
-        except NETWORK_ERRORS:  # one broken feed or lookup mustn't stop the rest
+        except NETWORK_ERRORS:  # one broken feed mustn't stop the rest
             continue
+        if (hits or rest) and adv not in rates:
+            lookups += 1
+            try:
+                rates[adv] = commission_rate(adv)
+            except NETWORK_ERRORS:
+                rates[adv] = None  # remembered, so its other feeds don't repeat the failed lookup
         if rates.get(adv):
             matched += [_row(item, rates[adv]) for item in hits]
             others += [_row(item, rates[adv]) for item in rest]

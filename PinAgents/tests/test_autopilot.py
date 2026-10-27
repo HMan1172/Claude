@@ -357,7 +357,7 @@ def test_refused_setting_changes_are_logged_not_fatal(tmp_path):
     client.update_campaign_cap = refuse
     c.update(ads_total_cap=1.0)
     log = run_cycle("home office", PRODUCTS, c, client, today="2026-10-27")
-    assert any("refused the new total cap" in line for line in log)
+    assert any("couldn't set the total cap to $1.00" in line for line in log)
 
 
 def test_a_refused_budget_cut_pauses_that_product_to_stay_within_the_cap(tmp_path):
@@ -388,3 +388,36 @@ def test_pinterest_item_level_refusals_in_a_200_raise(monkeypatch):
     monkeypatch.setattr(client, "_request", lambda *a, **kw: {"items": [{"exceptions": [{"code": 2, "message": "budget too low"}]}]})
     with pytest.raises(ValueError, match="budget too low"):
         client.update_ad_group("123", daily_budget=0.5)
+
+
+def test_refused_budget_cuts_pause_only_as_many_products_as_needed(tmp_path):
+    c, client = full_config(tmp_path, ads_daily_cap=50.0, ad_group_daily_budget=10.0, ads_min_bid=0.01), FakeClient()
+    for day in ["2026-10-25", "2026-10-26", "2026-10-27", "2026-10-28"]:
+        run_cycle("home office", PRODUCTS, c, client, today=day)
+    real = client.update_ad_group
+
+    def minimum_five(ad_group_id, max_cpc=None, daily_budget=None):
+        if daily_budget is not None and daily_budget < 5:
+            raise ValueError("below Pinterest's $5 minimum daily budget")
+        return real(ad_group_id, max_cpc=max_cpc, daily_budget=daily_budget)
+    client.update_ad_group = minimum_five
+    before = [g for g in state(tmp_path)["groups"].values() if g["status"] == "ACTIVE"]
+    assert len(before) >= 3
+    c.update(ads_daily_cap=10.0)                             # an even share is below $5 until 2 remain
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-29")
+    active = [g for g in state(tmp_path)["groups"].values() if g["status"] == "ACTIVE"]
+    assert len(active) == 2 and all(g["budget"] == 5.0 for g in active)
+
+
+def test_a_failed_kill_switch_pause_is_logged_not_fatal(tmp_path):
+    import requests
+    c, client = full_config(tmp_path), FakeClient()
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-25")
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-26")
+
+    def refuse(*a, **kw):
+        raise requests.ConnectionError("unreachable")
+    client.set_status = refuse
+    (tmp_path / "STOP").write_text("")
+    log = run_cycle("home office", PRODUCTS, c, client, today="2026-10-27")
+    assert any("campaign is still running" in line for line in log)
