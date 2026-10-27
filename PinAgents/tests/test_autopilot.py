@@ -187,3 +187,30 @@ def test_products_are_judged_on_spend_old_enough_for_sales_to_post(tmp_path):
     run_cycle("home office", PRODUCTS, c, client, today="2026-10-26")
     ends = [x[1] for x in client.calls if x[0] == "stats"]
     assert "2026-10-26" in ends and "2026-10-22" in ends
+
+
+def test_each_pin_is_saved_before_the_next_is_posted(tmp_path):
+    c, client = full_config(tmp_path), FakeClient()
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-25")
+    seen = []
+    real = client.create_pin
+
+    def create_pin(pin, image_path):
+        on_disk = json.loads((tmp_path / "autopilot.json").read_text())["posted"]
+        seen.append(len(on_disk))
+        return real(pin, image_path)
+    client.create_pin = create_pin
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-26")
+    assert seen == [0, 1, 2]   # a crash mid-cycle can't make the program forget a posted pin
+
+
+def test_a_batch_with_no_approved_pins_waits_before_retrying(tmp_path):
+    bad = tmp_path / "bad.csv"
+    bad.write_text("id,name,url,price,commission_rate\nb,Short Link,https://bit.ly/abc,20,5%\n")
+    c, client = full_config(tmp_path), FakeClient()
+    run_cycle("test", str(bad), c, client, today="2026-10-25")
+    assert state(tmp_path)["empty_batch"] == "2026-10-25"
+    log = run_cycle("test", str(bad), c, client, today="2026-10-26")
+    assert any("next try after" in line for line in log)
+    log = run_cycle("test", str(bad), c, client, today="2026-10-28")
+    assert any("Agents wrote 0 pins" in line for line in log)

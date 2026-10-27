@@ -17,7 +17,7 @@ import json
 import os
 from datetime import date, timedelta
 
-from .budget_guard import BudgetGuard, SpendRefused
+from .budget_guard import BudgetGuard, SpendRefused, write_json
 from .dataflows import cj
 from .dataflows.pinterest_api import PinterestClient
 from .dataflows.reports import TRACKING_COLUMNS
@@ -38,6 +38,7 @@ BID_MARGIN = 0.6
 # Sales reach the affiliate report days after the click (purchase delay, then posting). In
 # simulation, judging products on spend this old beat judging on today's spend on a held-out seed.
 ATTRIBUTION_DAYS = 4
+EMPTY_BATCH_WAIT_DAYS = 3  # after a batch where every pin failed compliance
 
 
 def _empty_state() -> dict:
@@ -73,27 +74,32 @@ def run_cycle(niche: str | None, products_csv: str | None, config: dict, client=
     if os.path.exists(state_path):
         with open(state_path, encoding="utf-8") as f:
             st.update(json.load(f))
+    def save():  # after every Pinterest create, so a crash can't lead to posting something twice
+        write_json(state_path, st)
+
     try:
         if client.ads_live:
             _drop_dry_ads(st)
         niche = niche or st.get("niche")  # an automatically picked niche sticks between batches
-        if not st["queue"]:
+        empty = st.get("empty_batch")
+        if not st["queue"] and empty and empty > _days_ago(today, EMPTY_BATCH_WAIT_DAYS):
+            log.append(f"Last batch had no pins pass compliance; next try after {EMPTY_BATCH_WAIT_DAYS} days.")
+        elif not st["queue"]:
             if not products_csv:
                 products_csv, niche = cj.discover(niche, os.path.join(config["results_dir"], f"cj_products_{today}.csv"))
                 log.append(f"Found products on CJ for '{niche}' ({products_csv}).")
             _generate(st, niche, products_csv, config, today, log)
+            st["empty_batch"] = None if st["queue"] else today
         st["niche"] = niche
-        _post_due(st, client, config, today, log)
+        _post_due(st, client, config, today, log, save)
         if cj.configured():
             config = {**config, "earnings_csv": config["earnings_csv"] or config["cj_earnings_path"]}
             cj.write_earnings(config["earnings_csv"], _days_ago(today, STATS_DAYS), today)
-        stats = _run_ads(st, client, guard, config, today, log)
+        stats = _run_ads(st, client, guard, config, today, log, save)
         if stats and (not st["last_lessons"] or st["last_lessons"] <= _days_ago(today, 7)):
             _learn(st, stats, niche, config, today, log)
     finally:
-        os.makedirs(os.path.dirname(state_path) or ".", exist_ok=True)
-        with open(state_path, "w", encoding="utf-8") as f:
-            json.dump(st, f, indent=1)
+        save()
     if not client.live or not client.ads_live:
         log.append(f"Dry run (posting live: {client.live}, ads live: {client.ads_live}).")
     return log
@@ -124,12 +130,13 @@ def _generate(st, niche, products_csv, config, today, log):
     log.append(f"Agents wrote {len(pins)} pins ({run_dir}).")
 
 
-def _post_due(st, client, config, today, log):
+def _post_due(st, client, config, today, log, save=lambda: None):
     due = [p for p in st["queue"] if p["post_date"] <= today][:config["pins_per_day"]]
     for p in due:
         res = client.create_pin(p, p["image"])
         st["posted"][p["key"]] = {**p, "pin_id": res["id"], "posted_date": today}
         st["queue"].remove(p)
+        save()
     if due:
         log.append(f"Posted {len(due)} pins, {len(st['queue'])} waiting.")
 
@@ -214,7 +221,7 @@ def _is_amazon(domain: str) -> bool:
     return any(part == "amazon" for part in domain.lower().split(".")) or domain.lower().endswith("amzn.to")
 
 
-def _run_ads(st, client, guard, config, today, log) -> dict:
+def _run_ads(st, client, guard, config, today, log, save=lambda: None) -> dict:
     if os.path.exists(config["kill_switch_path"]):
         _set_campaign(st, client, "PAUSED", "kill switch is on", log)
         return {}
@@ -292,13 +299,16 @@ def _run_ads(st, client, guard, config, today, log) -> dict:
             if not cid:
                 cid = client.create_campaign(f"PinAgents {today}", config["ads_total_cap"])
                 st["campaign"] = {"id": cid, "status": "ACTIVE"}
+                save()
             st["groups"][pid] = {"id": client.create_ad_group(cid, f"PinAgents {pid}", budget, bid),
                                  "status": "ACTIVE", "budget": budget, "bid": bid,
                                  "ad_tagged": _ad_link(p["link"], pid) is not None}
+            save()
             log.append(f"Started ads for {pid}: ${budget:.2f}/day, max ${bid:.2f} per click.")
         if st["groups"][pid]["status"] == "ACTIVE":
             st["ads"][key] = client.create_ad(st["groups"][pid]["id"], p["pin_id"], key,
                                               destination_url=_ad_link(p["link"], pid))
+            save()
     return stats
 
 

@@ -65,6 +65,14 @@ class BudgetGuard:
         self._save(ledger)
 
     def _save(self, ledger: dict) -> None:
-        os.makedirs(os.path.dirname(self.ledger_path) or ".", exist_ok=True)
-        with open(self.ledger_path, "w", encoding="utf-8") as f:
-            json.dump(ledger, f, indent=1)
+        write_json(self.ledger_path, ledger)
+
+
+def write_json(path: str, data) -> None:
+    """Write to a temporary file, then rename over the target, so a crash mid-write can never leave
+    a half-written file behind (a corrupt ledger would stop every later cycle)."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=1)
+    os.replace(tmp, path)
