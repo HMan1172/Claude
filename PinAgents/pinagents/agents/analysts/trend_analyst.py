@@ -1,7 +1,9 @@
 """Trend Analyst: what people in this niche are likely searching for on Pinterest right now.
 
 Plays the part of TradingAgents' news and sentiment analysts. Runs in parallel with the scout.
+When Pinterest's trends API is available, it works from real trending searches instead of guessing.
 """
+import json
 from datetime import date
 
 SYSTEM = """You are the Trend Analyst on a team that runs one Pinterest account.
@@ -17,6 +19,10 @@ def create_trend_analyst(llm, config):
         today = state.get("run_date") or date.today().isoformat()
         month = date.fromisoformat(today).strftime("%B")
         user = f"Niche: {state['niche']}\nToday: {today}"
+        if state.get("pinterest_trends"):
+            user += ("\nReal Pinterest search trends for this niche (growth is % change in searches; "
+                     "base your themes and keywords on these and prefer fast-growing, seasonal ones):\n"
+                     + json.dumps(state["pinterest_trends"]))
         out = llm.json(SYSTEM, user, tier="quick", task="trends",
                        payload={"niche": state["niche"], "month": month})
         trends = {

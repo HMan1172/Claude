@@ -17,6 +17,9 @@ from . import http
 
 API = "https://api.pinterest.com/v5"
 MICRO = 1_000_000
+# Regions Pinterest's trends API covers; a country outside them uses US trends.
+TREND_REGIONS = ["US", "CA", "DE", "FR", "ES", "IT", "AR", "BR", "CO", "MX", "DE+AT+CH", "GB+IE",
+                 "IT+ES+PT+GR+MT", "PL+RO+HU+SK+CZ", "SE+DK+FI+NO", "NL+BE+LU", "AU+NZ"]
 
 
 class PinterestClient:
@@ -164,6 +167,30 @@ class PinterestClient:
             raise
         floors = out.get("bid_floors") or []
         return max(floors) / MICRO if floors else None
+
+    def trending_keywords(self, niche: str) -> list[dict]:
+        """Pinterest's top seasonal and growing searches containing any word of the niche, with their
+        month-over-month and year-over-year growth in %. Read-only, so it runs in dry runs too;
+        empty when there's no token or Pinterest refuses."""
+        words = [w for w in re.findall(r"[a-z0-9]+", niche.lower()) if len(w) > 2][:50]
+        if not self.token or not words:
+            return []
+        country = self.config["ads_countries"][0]
+        region = next((r for r in TREND_REGIONS if country in r.split("+")), "US")
+        trends = {}
+        for trend_type in ("seasonal", "growing"):
+            try:
+                out = self._request("GET", f"/trends/keywords/{region}/top/{trend_type}",
+                                    params={"include_keywords": words, "limit": 20})
+            except requests.HTTPError as err:
+                if err.response is not None and err.response.status_code in (400, 401, 403, 404):
+                    return []
+                raise
+            for t in out.get("trends") or []:
+                trends.setdefault(t["keyword"], {"keyword": t["keyword"], "trend": trend_type,
+                                                 "growth_month": t.get("pct_growth_mom"),
+                                                 "growth_year": t.get("pct_growth_yoy")})
+        return list(trends.values())
 
     def keyword_volumes(self, keywords: list[str]) -> dict:
         """How often each keyword is searched on Pinterest in the first targeted country,

@@ -42,6 +42,9 @@ class FakeClient:
     def bid_floor(self):
         return None
 
+    def trending_keywords(self, niche):
+        return getattr(self, "trends", [])
+
     def keyword_volumes(self, keywords):
         return getattr(self, "volumes", {})
 
@@ -263,3 +266,27 @@ def test_refused_ad_groups_are_retried_after_a_cool_off_up_to_three_tries(tmp_pa
         run_cycle("home office", PRODUCTS, c, client, today=day)
     per_product = {name: tries.count(name) for name in tries}
     assert set(per_product.values()) == {3}                              # gave up after 3 tries
+
+
+def test_trend_analyst_sees_real_pinterest_trends(tmp_path, monkeypatch):
+    from pinagents import llm
+    prompts = []
+    real = llm.LLM.json
+    monkeypatch.setattr(llm.LLM, "json", lambda self, system, user, **kw: prompts.append(user) or real(self, system, user, **kw))
+    c, client = full_config(tmp_path), FakeClient()
+    client.trends = [{"keyword": "home office ideas", "trend": "seasonal", "growth_month": 140, "growth_year": 35}]
+    log = run_cycle("home office", PRODUCTS, c, client, today="2026-10-25")
+    assert any("Pinterest reports 1 trending searches" in line for line in log)
+    assert any("home office ideas" in p and "Real Pinterest search trends" in p for p in prompts)
+
+
+def test_trending_keywords_calls_pinterest_with_niche_words(monkeypatch):
+    from pinagents.dataflows.pinterest_api import PinterestClient
+    client = PinterestClient({"ads_countries": ["GB"]})
+    client.token = "t"
+    calls = []
+    monkeypatch.setattr(client, "_request", lambda method, path, **kw: calls.append((path, kw["params"])) or {
+        "trends": [{"keyword": "desk setup", "pct_growth_mom": 80, "pct_growth_yoy": 20}]})
+    out = client.trending_keywords("Home Office & Desk")
+    assert calls[0] == ("/trends/keywords/GB+IE/top/seasonal", {"include_keywords": ["home", "office", "desk"], "limit": 20})
+    assert out == [{"keyword": "desk setup", "trend": "seasonal", "growth_month": 80, "growth_year": 20}]

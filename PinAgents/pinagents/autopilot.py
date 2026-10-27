@@ -95,7 +95,7 @@ def run_cycle(niche: str | None, products_csv: str | None, config: dict, client=
                 products_csv, niche = cj.discover(niche, os.path.join(config["results_dir"], f"cj_products_{today}.csv"),
                                                   demand=client.keyword_volumes)
                 log.append(f"Found products on CJ for '{niche}' ({products_csv}).")
-            _generate(st, niche, products_csv, config, today, log)
+            _generate(st, niche, products_csv, config, today, log, client.trending_keywords(niche))
             st["empty_batch"] = None if st["queue"] else today
         st["niche"] = niche
         _post_due(st, client, config, today, log, save)
@@ -120,8 +120,10 @@ def _drop_dry_ads(st: dict) -> None:
     st["ads"] = {k: a for k, a in st["ads"].items() if not a.startswith("dry-")}
 
 
-def _generate(st, niche, products_csv, config, today, log):
-    state = PinAgentsGraph(config).propagate(niche, products_csv, run_date=today)
+def _generate(st, niche, products_csv, config, today, log, pinterest_trends=None):
+    if pinterest_trends:
+        log.append(f"Pinterest reports {len(pinterest_trends)} trending searches for '{niche}'.")
+    state = PinAgentsGraph(config).propagate(niche, products_csv, run_date=today, pinterest_trends=pinterest_trends)
     run_dir = save_run(state, config)
     for s in state.get("shortlist", []):
         st["products"][s["id"]] = {"name": s["name"], "expected_commission": s["expected_commission"],

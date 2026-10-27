@@ -8,6 +8,7 @@ class PinState(TypedDict, total=False):
     run_date: str
     products: list[dict]        # loaded from the products CSV
     lessons: str                # from the memory log of earlier runs
+    pinterest_trends: list[dict]  # real trending searches from Pinterest's trends API, if available
     shortlist: list[dict]       # product scout output
     trends: dict                # trend analyst output
     drafts: list[dict]          # pin writer output

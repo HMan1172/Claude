@@ -52,12 +52,14 @@ class PinAgentsGraph:
             return "revise"
         return "approve"
 
-    def propagate(self, niche: str, products_csv: str, run_date: str | None = None) -> dict:
+    def propagate(self, niche: str, products_csv: str, run_date: str | None = None,
+                  pinterest_trends: list[dict] | None = None) -> dict:
         state = {
             "niche": niche,
             "run_date": run_date or date.today().isoformat(),
             "products": load_products(products_csv),
             "lessons": self.memory.recent(),
+            "pinterest_trends": pinterest_trends or [],
             "revision_round": 0,
             "log": [],
         }
