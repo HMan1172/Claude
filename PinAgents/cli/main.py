@@ -74,14 +74,15 @@ def cmd_track(args):
 def cmd_autopilot(args):
     from pinagents.autopilot import run_cycle
 
-    from pinagents.dataflows import cj
+    from pinagents.dataflows import awin, cj
 
     cfg = _config(args)
-    if not args.products and not cj.configured():
-        raise ValueError("Give --products, or set CJ_API_TOKEN, CJ_COMPANY_ID and CJ_WEBSITE_ID "
-                         "so products are found automatically.")
-    if args.products and not args.niche:
-        raise ValueError("Give --niche with --products.")
+    if not args.products and not (cj.configured() or awin.configured()):
+        raise ValueError("Give --products, or set the CJ keys (CJ_API_TOKEN, CJ_COMPANY_ID, CJ_WEBSITE_ID) "
+                         "or Awin keys (AWIN_API_TOKEN, AWIN_PUBLISHER_ID, AWIN_FEED_KEY) so products "
+                         "are found automatically.")
+    if not args.niche and (args.products or not cj.configured()):
+        raise ValueError("Give --niche (only CJ can pick one automatically).")
     while True:
         try:
             for line in run_cycle(args.niche, args.products, cfg):
@@ -114,7 +115,10 @@ def cmd_check(args):
     import tempfile
     from datetime import date, timedelta
 
-    from pinagents.dataflows import cj
+    import csv
+    import io
+
+    from pinagents.dataflows import awin, cj, http
     from pinagents.dataflows.pinterest_api import PinterestClient
 
     cfg = _config(args)
@@ -168,6 +172,29 @@ def cmd_check(args):
         checks += [("CJ programs", programs), ("CJ products", products), ("CJ commissions", earnings)]
     else:
         checks.append(("CJ", lambda: "skipped (CJ_API_TOKEN/CJ_COMPANY_ID/CJ_WEBSITE_ID not set)"))
+    if awin.configured():
+        def awin_programmes():
+            joined = awin.programmes("joined")
+            rate = awin.commission_rate(joined[0]["id"]) if joined else None
+            return f"{len(joined)} joined" + (f"; e.g. {joined[0].get('name')}: "
+                                             f"{f'{rate:.0%}' if rate else 'no percentage commission'}" if joined else "")
+
+        def awin_feeds():
+            text = http.request("GET", awin.FEED_LIST.format(pub=os.environ["AWIN_PUBLISHER_ID"],
+                                                             key=os.environ["AWIN_FEED_KEY"]), timeout=60).text
+            feeds = list(csv.DictReader(io.StringIO(text)))
+            return f"{sum(f.get('Membership Status') == 'active' for f in feeds)} active product feeds"
+
+        def awin_earnings():
+            with tempfile.TemporaryDirectory() as tmp:
+                path = os.path.join(tmp, "e.csv")
+                today = date.today()
+                awin.write_earnings(path, (today - timedelta(days=30)).isoformat(), today.isoformat())
+                with open(path) as f:
+                    return f"{sum(1 for _ in f) - 1} tracked transactions in the last 30 days"
+
+        checks += [("Awin programmes", awin_programmes), ("Awin feeds", awin_feeds),
+                   ("Awin transactions", awin_earnings)]
 
     failed = 0
     for name, fn in checks:

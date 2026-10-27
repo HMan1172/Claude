@@ -18,10 +18,8 @@ DEFAULT_CONFIG = {
     "disclosure": "Affiliate link: I may earn a commission if you buy.",
 
     # Files
-    "results_dir": os.getenv("PINAGENTS_RESULTS_DIR", "results"),
-    "memory_log_path": os.getenv(
-        "PINAGENTS_MEMORY_LOG", os.path.expanduser("~/.pinagents/lessons.md")
-    ),
+    "results_dir": os.path.expanduser(os.getenv("PINAGENTS_RESULTS_DIR", "results")),
+    "memory_log_path": os.path.expanduser(os.getenv("PINAGENTS_MEMORY_LOG", "~/.pinagents/lessons.md")),
 
     # Stage 2 (posting through the official Pinterest API). Off until you have Standard access.
     "allow_posting": os.getenv("PINAGENTS_ALLOW_POSTING") == "1",
@@ -48,8 +46,8 @@ DEFAULT_CONFIG = {
     "ads_countries": ["US"],
     # CSV of product_id,earnings from your affiliate network (cumulative, from ad links only).
     "earnings_csv": os.getenv("PINAGENTS_EARNINGS_CSV", ""),
-    # Where CJ earnings are written when CJ_API_TOKEN etc. are set and earnings_csv is empty.
-    "cj_earnings_path": os.path.expanduser("~/.pinagents/cj_earnings.csv"),
+    # Where CJ/Awin earnings are written when their keys are set and earnings_csv is empty.
+    "network_earnings_path": os.path.expanduser("~/.pinagents/network_earnings.csv"),
 }
 
 DEFAULT_MODELS = {

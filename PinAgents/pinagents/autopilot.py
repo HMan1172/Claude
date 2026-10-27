@@ -20,7 +20,7 @@ from datetime import date, timedelta
 import requests
 
 from .budget_guard import BudgetGuard, SpendRefused, write_json
-from .dataflows import cj
+from .dataflows import awin, cj
 from .dataflows.pinterest_api import PinterestClient
 from .dataflows.reports import TRACKING_COLUMNS
 from .economics import max_cpc
@@ -94,21 +94,25 @@ def run_cycle(niche: str | None, products_csv: str | None, config: dict, client=
             log.append(f"Last batch had no pins pass compliance; next try after {EMPTY_BATCH_WAIT_DAYS} days.")
         elif not st["queue"]:
             if not products_csv:
-                products_csv, niche, st["niche_categories"] = cj.discover(
-                    niche, os.path.join(config["results_dir"], f"cj_products_{today}.csv"), demand=client.keyword_volumes)
-                log.append(f"Found products on CJ for '{niche}' ({products_csv}).")
+                products_csv, niche = _discover(st, niche, client, config, today, log)
             _generate(st, niche, products_csv, config, today, log, client.trending_keywords(niche))
             st["empty_batch"] = None if st["queue"] else today
         st["niche"] = niche
         _post_due(st, client, config, today, log, save)
-        if cj.configured():
-            config = {**config, "earnings_csv": config["earnings_csv"] or config["cj_earnings_path"]}
-            cj.write_earnings(config["earnings_csv"], _days_ago(today, STATS_DAYS), today)
+        networks = [n for n in (cj, awin) if n.configured()]
+        if networks:
+            config = {**config, "earnings_csv": config["earnings_csv"] or config["network_earnings_path"]}
+            _write_network_earnings(networks, config["earnings_csv"], _days_ago(today, STATS_DAYS), today)
             if niche and (st.get("last_join_list") or "") <= _days_ago(today, 7):
                 path = os.path.join(config["results_dir"], "join_list.md")
-                n = cj.write_join_list(niche, path, st.get("niche_categories", []))
+                if cj.configured():
+                    cj.write_join_list(niche, path, st.get("niche_categories", []))
+                if awin.configured():
+                    lines = awin.join_list_lines(niche)
+                    with open(path, "a" if cj.configured() else "w", encoding="utf-8") as f:
+                        f.write("\n" + "\n".join(lines) + "\n")
                 st["last_join_list"] = today
-                log.append(f"Ranked {n} CJ programs worth joining in {path}; joining takes a click in CJ.")
+                log.append(f"Ranked programmes worth joining in {path}; joining takes a click on each network.")
         stats = _run_ads(st, client, guard, config, today, log, save)
         if stats and (not st["last_lessons"] or st["last_lessons"] <= _days_ago(today, 7)):
             _learn(st, stats, niche, config, today, log)
@@ -117,6 +121,57 @@ def run_cycle(niche: str | None, products_csv: str | None, config: dict, client=
     if not client.live or not client.ads_live:
         log.append(f"Dry run (posting live: {client.live}, ads live: {client.ads_live}).")
     return log
+
+
+def _discover(st, niche, client, config, today, log) -> tuple[str, str]:
+    """Products from every configured network, merged into one CSV. CJ goes first: it can pick
+    the niche when none is given. One network coming up empty doesn't stop the other."""
+    paths, errors = [], []
+    out = lambda name: os.path.join(config["results_dir"], f"{name}_products_{today}.csv")
+    if cj.configured():
+        try:
+            path, niche, st["niche_categories"] = cj.discover(niche, out("cj"), demand=client.keyword_volumes)
+            paths.append(path)
+            log.append(f"Found products on CJ for '{niche}' ({path}).")
+        except ValueError as err:
+            errors.append(err)
+    if awin.configured():
+        if not niche:
+            raise ValueError("Awin can't pick a niche by itself; give --niche.")
+        try:
+            paths.append(awin.discover(niche, out("awin")))
+            log.append(f"Found products on Awin for '{niche}' ({paths[-1]}).")
+        except ValueError as err:
+            errors.append(err)
+    if not paths:
+        raise errors[0]
+    if len(paths) == 1:
+        return paths[0], niche
+    rows = []
+    for p in paths:
+        with open(p, newline="", encoding="utf-8") as f:
+            rows += list(csv.DictReader(f))
+    merged = out("all")
+    with open(merged, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=list(dict.fromkeys(k for r in rows for k in r)))
+        w.writeheader()
+        w.writerows(rows)
+    return merged, niche
+
+
+def _write_network_earnings(networks, path: str, since: str, today: str) -> None:
+    """One earnings CSV from every configured network (each network's link tags are distinct)."""
+    rows = []
+    for n in networks:
+        part = f"{path}.{n.__name__.rsplit('.', 1)[-1]}"
+        n.write_earnings(part, since, today)
+        with open(part, newline="", encoding="utf-8") as f:
+            rows += list(csv.DictReader(f))
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["product_id", "date", "earnings", "click_date"])
+        w.writeheader()
+        w.writerows(rows)
 
 
 def _drop_dry_ads(st: dict) -> None:
@@ -251,12 +306,13 @@ def _base_epc(prod: dict, config) -> float:
 
 
 def _ad_link(link: str, pid: str) -> str | None:
-    """The pin's link with its sid tag changed to "<id>-ad", so ad sales are reported apart from
-    free-pin sales. None when the link carries no sid tag to change."""
-    tag = f"sid={pid}"
-    if tag not in link or f"{tag}-" in link:
-        return None
-    return link.replace(tag, f"{tag}-ad")
+    """The pin's link with its tracking tag (CJ's sid, Awin's clickref) changed to "<id>-ad", so ad
+    sales are reported apart from free-pin sales. None when the link carries no tag to change."""
+    for param in ("sid", "clickref"):
+        tag = f"{param}={pid}"
+        if tag in link and f"{tag}-" not in link:
+            return link.replace(tag, f"{tag}-ad")
+    return None
 
 
 def _ad_earnings(earnings: dict, pid: str, group: dict):

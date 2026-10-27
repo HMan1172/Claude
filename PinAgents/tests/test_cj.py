@@ -86,7 +86,7 @@ def test_write_earnings_matches_products_by_sid(fake_cj, tmp_path):
 
 def test_autopilot_runs_without_a_products_csv(fake_cj, tmp_path):
     c, client = full_config(tmp_path, earnings_csv=""), FakeClient()
-    c["cj_earnings_path"] = str(tmp_path / "cj_earnings.csv")
+    c["network_earnings_path"] = str(tmp_path / "cj_earnings.csv")
     run_cycle("home decor", None, c, client, today="2026-10-25")
     run_cycle("home decor", None, c, client, today="2026-10-26")
     group = state(tmp_path)["groups"]["cj9001"]
@@ -96,7 +96,7 @@ def test_autopilot_runs_without_a_products_csv(fake_cj, tmp_path):
 
 def test_ads_track_their_own_sales(fake_cj, tmp_path):
     c, client = full_config(tmp_path, earnings_csv=""), FakeClient()
-    c["cj_earnings_path"] = str(tmp_path / "cj_earnings.csv")
+    c["network_earnings_path"] = str(tmp_path / "cj_earnings.csv")
     run_cycle("home decor", None, c, client, today="2026-10-25")
     run_cycle("home decor", None, c, client, today="2026-10-26")
     ad = [x for x in client.calls if x[0] == "ad"][0]
@@ -113,7 +113,7 @@ def test_ads_track_their_own_sales(fake_cj, tmp_path):
 
 def test_bids_drop_when_ads_earn_less_than_network_epc(fake_cj, tmp_path):
     c, client = full_config(tmp_path, earnings_csv=""), FakeClient()
-    c["cj_earnings_path"] = str(tmp_path / "cj_earnings.csv")
+    c["network_earnings_path"] = str(tmp_path / "cj_earnings.csv")
     run_cycle("home decor", None, c, client, today="2026-10-25")
     run_cycle("home decor", None, c, client, today="2026-10-26")
     for ad_id in state(tmp_path)["ads"].values():   # 400 clicks, cheap enough to stay under test budget
@@ -132,7 +132,7 @@ def test_autopilot_picks_its_own_niche(fake_cj, tmp_path, monkeypatch):
     monkeypatch.setattr(cj.http, "request", lambda method, url, **kw: (
         queries.append(kw["json"]["query"]) if method == "POST" else None) or real(method, url, **kw))
     c, client = full_config(tmp_path, earnings_csv=""), FakeClient()
-    c["cj_earnings_path"] = str(tmp_path / "cj_earnings.csv")
+    c["network_earnings_path"] = str(tmp_path / "cj_earnings.csv")
     log = run_cycle(None, None, c, client, today="2026-10-25")
     assert state(tmp_path)["niche"] == "Rugs"
     assert any("'Rugs'" in line for line in log)
@@ -244,7 +244,7 @@ def test_join_list_ranks_unjoined_programs_in_the_niche_first(fake_cj, monkeypat
 
 def test_autopilot_writes_the_join_list_weekly(fake_cj, tmp_path):
     c, client = full_config(tmp_path, earnings_csv=""), FakeClient()
-    c["cj_earnings_path"] = str(tmp_path / "cj_earnings.csv")
+    c["network_earnings_path"] = str(tmp_path / "cj_earnings.csv")
     log = run_cycle("Rugs", None, c, client, today="2026-10-25")
     assert any("worth joining" in line for line in log)
     assert not any("worth joining" in line for line in run_cycle("Rugs", None, c, client, today="2026-10-28"))
