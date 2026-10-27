@@ -17,6 +17,8 @@ import json
 import os
 from datetime import date, timedelta
 
+import requests
+
 from .budget_guard import BudgetGuard, SpendRefused, write_json
 from .dataflows import cj
 from .dataflows.pinterest_api import PinterestClient
@@ -275,8 +277,9 @@ def _run_ads(st, client, guard, config, today, log, save=lambda: None) -> dict:
 
     # 4. Promote posted pins that don't have an ad yet.
     budget = config["ad_group_daily_budget"]
+    refused = st.setdefault("refused", {})
     for key, p in st["posted"].items():
-        if key in st["ads"]:
+        if key in st["ads"] or key in refused:
             continue
         pid = p["product_id"]
         if pid not in st["groups"] and _is_amazon(st["products"].get(pid, {}).get("domain", "")):
@@ -300,14 +303,24 @@ def _run_ads(st, client, guard, config, today, log, save=lambda: None) -> dict:
                 cid = client.create_campaign(f"PinAgents {today}", config["ads_total_cap"])
                 st["campaign"] = {"id": cid, "status": "ACTIVE"}
                 save()
-            st["groups"][pid] = {"id": client.create_ad_group(cid, f"PinAgents {pid}", budget, bid),
-                                 "status": "ACTIVE", "budget": budget, "bid": bid,
+            try:
+                group_id = client.create_ad_group(cid, f"PinAgents {pid}", budget, bid)
+            except (ValueError, requests.HTTPError) as err:  # one refused product mustn't stop the rest
+                st["groups"][pid] = {"status": "REFUSED", "reason": f"Pinterest refused the ad group: {err}"}
+                log.append(f"Not advertising {pid}: {st['groups'][pid]['reason']}")
+                save()
+                continue
+            st["groups"][pid] = {"id": group_id, "status": "ACTIVE", "budget": budget, "bid": bid,
                                  "ad_tagged": _ad_link(p["link"], pid) is not None}
             save()
             log.append(f"Started ads for {pid}: ${budget:.2f}/day, max ${bid:.2f} per click.")
         if st["groups"][pid]["status"] == "ACTIVE":
-            st["ads"][key] = client.create_ad(st["groups"][pid]["id"], p["pin_id"], key,
-                                              destination_url=_ad_link(p["link"], pid))
+            try:
+                st["ads"][key] = client.create_ad(st["groups"][pid]["id"], p["pin_id"], key,
+                                                  destination_url=_ad_link(p["link"], pid))
+            except (ValueError, requests.HTTPError) as err:  # e.g. the pin fails Pinterest's ad review
+                refused[key] = str(err)
+                log.append(f"Pinterest refused an ad for pin {key}: {err}")
             save()
     return stats
 

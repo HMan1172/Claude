@@ -214,3 +214,31 @@ def test_a_batch_with_no_approved_pins_waits_before_retrying(tmp_path):
     assert any("next try after" in line for line in log)
     log = run_cycle("test", str(bad), c, client, today="2026-10-28")
     assert any("Agents wrote 0 pins" in line for line in log)
+
+
+def test_a_refused_ad_group_does_not_stop_other_products(tmp_path):
+    c, client = full_config(tmp_path), FakeClient()
+    real = client.create_ad_group
+
+    def create_ad_group(campaign_id, name, daily_budget, max_cpc):
+        if len([x for x in client.calls if x[0] == "group"]) == 0:
+            client.calls.append(("group", name, daily_budget, max_cpc))
+            raise ValueError("Pinterest refused the ad_group: budget below minimum")
+        return real(campaign_id, name, daily_budget, max_cpc)
+    client.create_ad_group = create_ad_group
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-25")
+    log = run_cycle("home office", PRODUCTS, c, client, today="2026-10-26")
+    groups = state(tmp_path)["groups"]
+    assert sorted(g["status"] for g in groups.values()) == ["ACTIVE", "REFUSED"]
+    assert any("budget below minimum" in line for line in log)
+
+
+def test_check_tests_the_ai_provider(monkeypatch, capsys):
+    from cli.main import main
+    from pinagents import llm
+    monkeypatch.delenv("PINTEREST_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("PINTEREST_REFRESH_TOKEN", raising=False)
+    monkeypatch.delenv("CJ_API_TOKEN", raising=False)
+    monkeypatch.setattr(llm.LLM, "_call", lambda self, system, user, model: '{"ok": true}')
+    assert main(["check", "--provider", "anthropic"]) == 0
+    assert "OK    AI provider (quick model claude-haiku-5-5): replied" in capsys.readouterr().out

@@ -119,6 +119,13 @@ def cmd_check(args):
     client = PinterestClient(cfg)
     checks = [("Pinterest token refresh", lambda: "refreshed" if client.refresh_access_token()
                else "skipped (PINTEREST_APP_ID/SECRET/REFRESH_TOKEN not all set)")]
+    if cfg["llm_provider"] != "mock":
+        from pinagents.llm import LLM
+
+        llm = LLM(cfg)
+        for tier in ("quick", "deep"):
+            checks.append((f"AI provider ({tier} model {llm.models[tier]})", lambda tier=tier: "replied" if llm.json(
+                "Reply with JSON only.", 'Reply with {"ok": true}', tier=tier).get("ok") else "replied oddly"))
     if os.getenv("PINTEREST_ACCESS_TOKEN") or os.getenv("PINTEREST_REFRESH_TOKEN"):
         checks += [
             ("Pinterest account", lambda: client._request("GET", "/user_account").get("username")),
@@ -201,6 +208,7 @@ def main(argv=None):
     a.set_defaults(func=cmd_autopilot)
 
     c = sub.add_parser("check", help="Test every outside connection read-only before going live")
+    c.add_argument("--provider", choices=["anthropic", "openai", "ollama", "mock"])
     c.set_defaults(func=cmd_check)
 
     e = sub.add_parser("economics", help="Check whether ads could be profitable")

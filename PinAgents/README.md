@@ -90,8 +90,8 @@ pinagents autopilot --niche "home office" --loop 24  # or choose the niche
 pinagents autopilot --niche "home office" --products products.csv  # or use your own list
 ```
 
-Run `pinagents check` first: it calls Pinterest and CJ read-only and prints OK or the exact
-error for each, so a mismatch with either API shows up before anything is posted or spent. It
+Run `pinagents check` first: it calls Pinterest and CJ read-only, sends your AI provider one tiny
+test message per model, and prints OK or the exact error for each, so a mismatch with either API shows up before anything is posted or spent. It
 also shows Pinterest's own click price forecast and expected weekly clicks for your budget (if
 Pinterest has opened its beta estimate API to your app).
 
