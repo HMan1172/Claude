@@ -98,6 +98,8 @@ def cmd_autopilot(args):
 def _forecast(client, cfg) -> str:
     from datetime import date
 
+    if not client.ads_live:
+        return "skipped (ads are off; set PINAGENTS_ALLOW_ADS=1 to ask Pinterest)"
     est = client.delivery_estimate(cfg["ads_daily_cap"], date.today().isoformat())
     if not est:
         return "not available to this app (Pinterest's estimate API is in beta)"
@@ -126,14 +128,19 @@ def cmd_check(args):
         for tier in ("quick", "deep"):
             checks.append((f"AI provider ({tier} model {llm.models[tier]})", lambda tier=tier: "replied" if llm.json(
                 "Reply with JSON only.", 'Reply with {"ok": true}', tier=tier).get("ok") else "replied oddly"))
-    if os.getenv("PINTEREST_ACCESS_TOKEN") or os.getenv("PINTEREST_REFRESH_TOKEN"):
-        checks += [
-            ("Pinterest account", lambda: client._request("GET", "/user_account").get("username")),
-            ("Pinterest board", lambda: client._request("GET", f"/boards/{cfg['pinterest_board_id']}")["name"]),
-            ("Pinterest ad account", lambda: client._request(
-                "GET", f"/ad_accounts/{cfg['pinterest_ad_account_id']}")["name"]),
-            ("Pinterest click price forecast", lambda: _forecast(client, cfg)),
-        ]
+    # The refresh token may only exist in the saved token file once it has been rotated.
+    if any([os.getenv("PINTEREST_ACCESS_TOKEN"), os.getenv("PINTEREST_REFRESH_TOKEN"),
+            os.path.exists(cfg["pinterest_token_path"])]):
+        checks.append(("Pinterest account", lambda: client._request("GET", "/user_account").get("username")))
+        if cfg["pinterest_board_id"]:
+            checks.append(("Pinterest board", lambda: client._request(
+                "GET", f"/boards/{cfg['pinterest_board_id']}")["name"]))
+        if cfg["pinterest_ad_account_id"]:
+            checks += [
+                ("Pinterest ad account", lambda: client._request(
+                    "GET", f"/ad_accounts/{cfg['pinterest_ad_account_id']}")["name"]),
+                ("Pinterest click price forecast", lambda: _forecast(client, cfg)),
+            ]
     if cj.configured():
         found = {}
 

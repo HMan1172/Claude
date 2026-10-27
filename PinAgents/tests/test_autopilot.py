@@ -48,8 +48,14 @@ class FakeClient:
     def keyword_volumes(self, keywords):
         return getattr(self, "volumes", {})
 
-    def update_ad_group(self, ad_group_id, max_cpc):
-        self.calls.append(("bid", ad_group_id, max_cpc))
+    def update_ad_group(self, ad_group_id, max_cpc=None, daily_budget=None):
+        if max_cpc is not None:
+            self.calls.append(("bid", ad_group_id, max_cpc))
+        if daily_budget is not None:
+            self.calls.append(("budget", ad_group_id, daily_budget))
+
+    def update_campaign_cap(self, campaign_id, lifetime_cap):
+        self.calls.append(("cap", campaign_id, lifetime_cap))
 
     def set_status(self, kind, ids, status):
         self.calls.append(("status", kind, tuple(ids), status))
@@ -311,3 +317,29 @@ def test_sales_delay_prefers_ad_sales_once_there_are_enough(tmp_path):
     assert _sales_delay(str(path)) == 10                     # only 5 ad sales: use all sales
     path.write_text("\n".join(["product_id,date,earnings,click_date"] + organic + ads))
     assert _sales_delay(str(path)) == 2                      # 10 ad sales: ads alone
+
+
+def test_raised_caps_and_budgets_reach_pinterest(tmp_path):
+    c, client = full_config(tmp_path), FakeClient()
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-25")
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-26")
+    cid = state(tmp_path)["campaign"]["id"]
+    c.update(ads_total_cap=500.0, ad_group_daily_budget=2.0)
+    log = run_cycle("home office", PRODUCTS, c, client, today="2026-10-27")
+    assert ("cap", cid, 500.0) in client.calls
+    groups = [g for g in state(tmp_path)["groups"].values() if g["status"] == "ACTIVE"]
+    assert groups and all(g["budget"] == 2.0 for g in groups)
+    assert all(("budget", g["id"], 2.0) in client.calls for g in groups)
+    assert any("total cap set to $500.00" in line for line in log)
+
+
+def test_raised_budgets_stay_within_the_daily_cap(tmp_path):
+    c, client = full_config(tmp_path), FakeClient()
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-25")
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-26")
+    c.update(ad_group_daily_budget=20.0)                     # 2 products x $20 > $5 daily cap
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-27")
+    st = state(tmp_path)
+    active = [g for g in st["groups"].values() if g["status"] == "ACTIVE"]
+    assert sum(g["budget"] for g in active) <= c["ads_daily_cap"]
+    assert st["campaign"]["status"] == "ACTIVE"

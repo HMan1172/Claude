@@ -201,6 +201,25 @@ def _sales_delay(path: str) -> int:
     return min(14, max(1, lags[int(0.9 * (len(lags) - 1))]))
 
 
+def _apply_changed_settings(st, client, config, log) -> None:
+    """Carry a changed total cap or per-product budget over to what's already running on Pinterest;
+    otherwise Pinterest keeps enforcing the values from when the campaign and ad groups were made."""
+    c = st["campaign"]
+    if c["id"] and c.get("cap") != config["ads_total_cap"]:
+        client.update_campaign_cap(c["id"], config["ads_total_cap"])
+        c["cap"] = config["ads_total_cap"]
+        log.append(f"Campaign total cap set to ${config['ads_total_cap']:.2f}.")
+    active = [g for g in st["groups"].values() if g["status"] == "ACTIVE"]
+    # Never more than an even share of the daily cap, or today's authorization would fail and
+    # pause the whole campaign.
+    budget = min(config["ad_group_daily_budget"], round(config["ads_daily_cap"] / max(1, len(active)), 2))
+    for pid, g in st["groups"].items():
+        if g["status"] == "ACTIVE" and g["budget"] != budget:
+            client.update_ad_group(g["id"], daily_budget=budget)
+            g["budget"] = budget
+            log.append(f"Ads for {pid} now ${budget:.2f}/day.")
+
+
 def _calibrate_bids(st, client, by_product, earnings, config, min_bid: float) -> None:
     """Lower every bid by the pooled ratio of ad earnings to what network EPC predicted (never raise)."""
     expected = earned = 0.0
@@ -308,6 +327,7 @@ def _run_ads(st, client, guard, config, today, log, save=lambda: None) -> dict:
     # Pinterest's real minimum bid for our targeting; the configured one when it won't say.
     min_bid = client.bid_floor() or config["ads_min_bid"]
     _calibrate_bids(st, client, by_product, earnings, config, min_bid)
+    _apply_changed_settings(st, client, config, log)
 
     # 3. Authorize today's budget for ad groups already running.
     active = [g for g in st["groups"].values() if g["status"] == "ACTIVE"]
@@ -349,7 +369,7 @@ def _run_ads(st, client, guard, config, today, log, save=lambda: None) -> dict:
                 break
             if not cid:
                 cid = client.create_campaign(f"PinAgents {today}", config["ads_total_cap"])
-                st["campaign"] = {"id": cid, "status": "ACTIVE"}
+                st["campaign"] = {"id": cid, "status": "ACTIVE", "cap": config["ads_total_cap"]}
                 save()
             try:
                 group_id = client.create_ad_group(cid, f"PinAgents {pid}", budget, bid)

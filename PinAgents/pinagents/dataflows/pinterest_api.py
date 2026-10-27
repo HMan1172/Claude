@@ -211,11 +211,22 @@ class PinterestClient:
                 volumes[row["keyword"]] = v
         return volumes
 
-    def update_ad_group(self, ad_group_id: str, max_cpc: float) -> None:
+    def update_ad_group(self, ad_group_id: str, max_cpc: float | None = None,
+                        daily_budget: float | None = None) -> None:
         if not self.ads_live or ad_group_id.startswith("dry-"):
             return
-        self._request("PATCH", f"/ad_accounts/{self.ad_account}/ad_groups",
-                      json=[{"id": ad_group_id, "bid_in_micro_currency": int(max_cpc * MICRO)}])
+        change = {"id": ad_group_id}
+        if max_cpc is not None:
+            change["bid_in_micro_currency"] = int(max_cpc * MICRO)
+        if daily_budget is not None:
+            change["budget_in_micro_currency"] = int(daily_budget * MICRO)
+        self._request("PATCH", f"/ad_accounts/{self.ad_account}/ad_groups", json=[change])
+
+    def update_campaign_cap(self, campaign_id: str, lifetime_cap: float) -> None:
+        if not self.ads_live or campaign_id.startswith("dry-"):
+            return
+        self._request("PATCH", f"/ad_accounts/{self.ad_account}/campaigns", json=[{
+            "id": campaign_id, "ad_account_id": self.ad_account, "lifetime_spend_cap": int(lifetime_cap * MICRO)}])
 
     def set_status(self, kind: str, ids: list[str], status: str) -> None:
         """kind is "campaigns" or "ad_groups"; status is "ACTIVE" or "PAUSED"."""

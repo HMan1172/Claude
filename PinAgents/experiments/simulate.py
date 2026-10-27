@@ -73,8 +73,14 @@ class SimMarket:
     def bid_floor(self):
         return None
 
-    def update_ad_group(self, ad_group_id, max_cpc=None):
-        self.groups[ad_group_id]["bid"] = max_cpc
+    def update_ad_group(self, ad_group_id, max_cpc=None, daily_budget=None):
+        if max_cpc is not None:
+            self.groups[ad_group_id]["bid"] = max_cpc
+        if daily_budget is not None:
+            self.groups[ad_group_id]["budget"] = daily_budget
+
+    def update_campaign_cap(self, campaign_id, lifetime_cap):
+        pass
 
     def create_ad(self, ad_group_id, pin_id, name, destination_url=None):
         aid = self._id("ad")
