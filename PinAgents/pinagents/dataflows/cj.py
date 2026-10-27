@@ -187,24 +187,36 @@ def discover(niche: str | None, out_path: str, demand=None) -> tuple[str, str]:
     return out_path, niche
 
 
+def _commissions(start: date, end: date, click_dates: bool) -> dict:
+    query = f"""{{ publisherCommissions(forPublishers: ["{os.environ['CJ_COMPANY_ID']}"],
+        sincePostingDate: "{start.isoformat()}T00:00:00Z",
+        beforePostingDate: "{end.isoformat()}T00:00:00Z") {{
+      payloadComplete records {{ postingDate shopperId pubCommissionAmountUsd {"clickDate" if click_dates else ""} }} }} }}"""
+    return _graphql(COMMISSIONS, query)["publisherCommissions"]
+
+
 def write_earnings(path: str, since: str, today: str) -> None:
-    """Rewrite the product_id,date,earnings CSV the autopilot reads, from CJ commissions."""
-    rows, start = [], date.fromisoformat(since)
+    """Rewrite the product_id,date,earnings,click_date CSV the autopilot reads, from CJ commissions.
+    click_date (when CJ provides it) lets the autopilot measure how long sales take to post."""
+    rows, start, click_dates = [], date.fromisoformat(since), True
     while start <= date.fromisoformat(today):
         end = min(start + timedelta(days=30), date.fromisoformat(today) + timedelta(days=1))
-        query = f"""{{ publisherCommissions(forPublishers: ["{os.environ['CJ_COMPANY_ID']}"],
-            sincePostingDate: "{start.isoformat()}T00:00:00Z",
-            beforePostingDate: "{end.isoformat()}T00:00:00Z") {{
-          payloadComplete records {{ postingDate shopperId pubCommissionAmountUsd }} }} }}"""
-        data = _graphql(COMMISSIONS, query)["publisherCommissions"]
+        try:
+            data = _commissions(start, end, click_dates)
+        except ValueError as err:
+            if not (click_dates and "clickDate" in str(err)):
+                raise
+            click_dates = False  # click dates are a bonus; never lose the earnings over them
+            data = _commissions(start, end, click_dates)
         if not data.get("payloadComplete", True):
             raise ValueError("CJ returned a partial commission report; too many records for one call.")
         for r in data["records"]:
             if r.get("shopperId"):
-                rows.append([r["shopperId"], r["postingDate"][:10], r["pubCommissionAmountUsd"]])
+                rows.append([r["shopperId"], r["postingDate"][:10], r["pubCommissionAmountUsd"],
+                             (r.get("clickDate") or "")[:10]])
         start = end
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["product_id", "date", "earnings"])
+        w.writerow(["product_id", "date", "earnings", "click_date"])
         w.writerows(rows)

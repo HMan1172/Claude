@@ -80,7 +80,7 @@ def test_write_earnings_matches_products_by_sid(fake_cj, tmp_path):
     path = tmp_path / "earnings.csv"
     cj.write_earnings(str(path), "2026-10-15", "2026-10-26")
     rows = list(csv.DictReader(open(path)))
-    assert {"product_id": "cj9001", "date": "2026-10-20", "earnings": "15.48"} in rows
+    assert {"product_id": "cj9001", "date": "2026-10-20", "earnings": "15.48", "click_date": ""} in rows
     assert all(r["product_id"] for r in rows)
 
 
@@ -208,3 +208,15 @@ def test_check_shows_what_cj_returned_when_nothing_is_readable(fake_cj, monkeypa
     monkeypatch.delenv("PINTEREST_REFRESH_TOKEN", raising=False)
     assert main(["check"]) == 1
     assert "first <advertiser> has: ['id', 'program-name']" in capsys.readouterr().out
+
+
+def test_earnings_survive_cj_rejecting_click_dates(fake_cj, monkeypatch, tmp_path):
+    def post(method, url, json, **kw):
+        if "__type" in json["query"]:
+            return Resp(body={"data": {"__type": None}})
+        if "clickDate" in json["query"]:
+            return Resp(body={"errors": [{"message": 'Cannot query field "clickDate" on type "Commission".'}]})
+        return Resp(body=COMMISSIONS)
+    monkeypatch.setattr(cj.http, "request", post)
+    cj.write_earnings(str(tmp_path / "e.csv"), "2026-10-20", "2026-10-26")
+    assert "cj9001,2026-10-20,15.48," in (tmp_path / "e.csv").read_text()

@@ -290,3 +290,13 @@ def test_trending_keywords_calls_pinterest_with_niche_words(monkeypatch):
     out = client.trending_keywords("Home Office & Desk")
     assert calls[0] == ("/trends/keywords/GB+IE/top/seasonal", {"include_keywords": ["home", "office", "desk"], "limit": 20})
     assert out == [{"keyword": "desk setup", "trend": "seasonal", "growth_month": 80, "growth_year": 20}]
+
+
+def test_sales_delay_is_measured_once_there_are_enough_sales(tmp_path):
+    from pinagents.autopilot import _sales_delay
+    path = tmp_path / "earnings.csv"
+    rows = ["product_id,date,earnings,click_date"] + [f"a,2026-10-{10 + d:02d},5,2026-10-10" for d in [1] * 8 + [6, 9]]
+    path.write_text("\n".join(rows[:6]))
+    assert _sales_delay(str(path)) == 4                       # 5 sales: too few, default
+    path.write_text("\n".join(rows))
+    assert _sales_delay(str(path)) == 6                       # 90% of 10 sales posted within 6 days

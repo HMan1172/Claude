@@ -39,7 +39,9 @@ CALIBRATION_SALES = 5
 BID_MARGIN = 0.6
 # Sales reach the affiliate report days after the click (purchase delay, then posting). In
 # simulation, judging products on spend this old beat judging on today's spend on a held-out seed.
+# Once the earnings file has click dates for enough sales, the measured delay replaces it.
 ATTRIBUTION_DAYS = 4
+MIN_SALES_TO_MEASURE_DELAY = 10
 EMPTY_BATCH_WAIT_DAYS = 3  # after a batch where every pin failed compliance
 # Pinterest refusals can be temporary (account review, budget rules that change), so a refused
 # ad group or ad is tried again after this many days, up to REFUSED_MAX_TRIES times in all.
@@ -172,6 +174,23 @@ def _load_earnings(path: str, since: str) -> dict:
     return totals
 
 
+def _sales_delay(path: str) -> int:
+    """Days within which 90% of sales reach the report, from the earnings file's click dates
+    (kept between 1 and 14); ATTRIBUTION_DAYS until there are enough sales to measure."""
+    lags = []
+    if path and os.path.exists(path):
+        with open(path, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                try:
+                    lags.append((date.fromisoformat(row["date"]) - date.fromisoformat(row["click_date"])).days)
+                except (KeyError, TypeError, ValueError):
+                    continue
+    if len(lags) < MIN_SALES_TO_MEASURE_DELAY:
+        return ATTRIBUTION_DAYS
+    lags.sort()
+    return min(14, max(1, lags[int(0.9 * (len(lags) - 1))]))
+
+
 def _calibrate_bids(st, client, by_product, earnings, config, min_bid: float) -> None:
     """Lower every bid by the pooled ratio of ad earnings to what network EPC predicted (never raise)."""
     expected = earned = 0.0
@@ -253,7 +272,11 @@ def _run_ads(st, client, guard, config, today, log, save=lambda: None) -> dict:
     stats = client.ad_stats(list(st["ads"].values()), since, today)
     # Products are judged on spend from ATTRIBUTION_DAYS ago, so sales still on their way to the
     # affiliate report aren't missing when a product is weighed against its cost.
-    judged = client.ad_stats(list(st["ads"].values()), since, _days_ago(today, ATTRIBUTION_DAYS))
+    delay = _sales_delay(config["earnings_csv"])
+    if delay != st.get("sales_delay_days", ATTRIBUTION_DAYS):
+        log.append(f"Sales take up to {delay} days to post; judging products on spend that old.")
+    st["sales_delay_days"] = delay
+    judged = client.ad_stats(list(st["ads"].values()), since, _days_ago(today, delay))
     by_product = {}
     for key, ad_id in st["ads"].items():
         s, pid = judged.get(ad_id), st["posted"][key]["product_id"]
