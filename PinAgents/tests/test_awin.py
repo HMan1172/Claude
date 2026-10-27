@@ -1,6 +1,7 @@
 import csv
 import gzip
 import io
+import sys
 
 import pytest
 
@@ -61,6 +62,7 @@ def fake_awin(monkeypatch):
     monkeypatch.setenv("AWIN_API_TOKEN", "t")
     monkeypatch.setenv("AWIN_PUBLISHER_ID", "7")
     monkeypatch.setenv("AWIN_FEED_KEY", "abc123")
+    monkeypatch.setattr(awin.time, "sleep", lambda s: None)   # rate-limit pacing
     calls = []
 
     def request(method, url, **kw):
@@ -79,7 +81,7 @@ def fake_awin(monkeypatch):
             return Resp(body={"commissionRange": [{"min": 5, "max": 10, "type": "percentage"},
                                                   {"min": 2, "max": 3, "type": "fix"}]})
         if url.endswith("/transactions/"):
-            return Resp(body=TRANSACTIONS)
+            return Resp(body=sys.modules[__name__].TRANSACTIONS)
         raise AssertionError(url)
     monkeypatch.setattr(awin.http, "request", request)
     return calls
@@ -148,3 +150,37 @@ def test_both_networks_merge_products_and_earnings(fake_awin, monkeypatch, tmp_p
     assert "cj9001" in earnings and "aw1-ad" in earnings
     join = (tmp_path / "results" / "join_list.md").read_text()
     assert "CJ programs worth joining" in join and "Awin programmes" in join
+
+
+def test_deleted_and_non_usd_transactions_are_left_out(fake_awin, monkeypatch, tmp_path):
+    extra = [{"clickRefs": {"clickRef": "aw2"}, "transactionDate": "2026-10-22T10:00:00",
+              "commissionAmount": {"amount": 9.0, "currency": "USD"}, "commissionStatus": "deleted"},
+             {"clickRefs": {"clickRef": "aw3"}, "transactionDate": "2026-10-22T10:00:00",
+              "commissionAmount": {"amount": 7.0, "currency": "GBP"}, "commissionStatus": "approved"}]
+    monkeypatch.setattr(sys.modules[__name__], "TRANSACTIONS", TRANSACTIONS + extra)
+    skipped = awin.write_earnings(str(tmp_path / "e.csv"), "2026-10-20", "2026-10-26")
+    text = (tmp_path / "e.csv").read_text()
+    assert skipped == 1 and "aw2" not in text and "aw3" not in text and "aw1-ad" in text
+
+
+def test_a_broken_feed_is_skipped_and_unmatched_products_are_a_fallback(fake_awin, monkeypatch, tmp_path):
+    feeds = FEED_LIST + "504,Broken Co,US,active,F9004,B,English,Awin,\n"
+    real = awin.http.request
+
+    def request(method, url, **kw):
+        if url.endswith("/feedList"):
+            return Resp(text=feeds)
+        if "/fid/9004/" in url:
+            return Resp(raw=b"<html>not gzip</html>")
+        return real(method, url, **kw)
+    monkeypatch.setattr(awin.http, "request", request)
+    products = load_products(awin.discover("ergonomic chairs", str(tmp_path / "p.csv")))
+    assert {p["id"] for p in products} == {"aw1", "aw2"}     # nothing matched: the feed's USD products
+
+
+def test_awin_api_calls_are_paced_for_its_rate_limit(fake_awin, monkeypatch):
+    waits = []
+    monkeypatch.setattr(awin.time, "sleep", waits.append)
+    awin.programmes("joined")
+    awin.programmes("joined")
+    assert waits and waits[-1] > 3

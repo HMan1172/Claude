@@ -343,3 +343,16 @@ def test_raised_budgets_stay_within_the_daily_cap(tmp_path):
     active = [g for g in st["groups"].values() if g["status"] == "ACTIVE"]
     assert sum(g["budget"] for g in active) <= c["ads_daily_cap"]
     assert st["campaign"]["status"] == "ACTIVE"
+
+
+def test_refused_setting_changes_are_logged_not_fatal(tmp_path):
+    c, client = full_config(tmp_path), FakeClient()
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-25")
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-26")
+
+    def refuse(*a, **kw):
+        raise ValueError("below what's already spent")
+    client.update_campaign_cap = refuse
+    c.update(ads_total_cap=1.0)
+    log = run_cycle("home office", PRODUCTS, c, client, today="2026-10-27")
+    assert any("refused the new total cap" in line for line in log)

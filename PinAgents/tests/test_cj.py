@@ -264,3 +264,52 @@ def test_join_list_counts_categories_that_supplied_products_as_the_niche(fake_cj
     cj.write_join_list("home office", str(tmp_path / "join.md"), categories=["Furniture"])
     text = (tmp_path / "join.md").read_text()
     assert text.index("Desk Depot") < text.index("Big Lamps")   # "home office" shares no word with "Furniture"
+
+
+def test_failed_earnings_report_pauses_ads_and_join_list_failure_does_not(fake_cj, monkeypatch, tmp_path):
+    c, client = full_config(tmp_path, earnings_csv=""), FakeClient()
+    c["network_earnings_path"] = str(tmp_path / "earnings.csv")
+    run_cycle("Rugs", None, c, client, today="2026-10-25")
+    run_cycle("Rugs", None, c, client, today="2026-10-26")
+    assert state(tmp_path)["campaign"]["status"] == "ACTIVE"
+    real = cj.http.request
+
+    def broken_join_list(method, url, **kw):
+        if method == "GET" and kw.get("params", {}).get("advertiser-ids") == "notjoined":
+            return Resp(content=b"<not xml")
+        return real(method, url, **kw)
+    monkeypatch.setattr(cj.http, "request", broken_join_list)
+    log = run_cycle("Rugs", None, c, client, today="2026-11-02")       # join list due, and broken
+    assert any("Join list skipped" in line for line in log)
+    assert state(tmp_path)["campaign"]["status"] == "ACTIVE"
+    monkeypatch.setattr(cj.http, "request", lambda method, url, **kw: Resp(body={"errors": [{"message": "down"}]})
+                        if url == cj.COMMISSIONS else real(method, url, **kw))
+    log = run_cycle("Rugs", None, c, client, today="2026-11-03")
+    assert any("Earnings report failed" in line for line in log)
+    assert state(tmp_path)["campaign"]["status"] == "PAUSED"
+    monkeypatch.setattr(cj.http, "request", real)
+    run_cycle("Rugs", None, c, client, today="2026-11-04")                # report back: ads resume
+    assert state(tmp_path)["campaign"]["status"] == "ACTIVE"
+
+
+def test_join_list_ignores_categories_from_a_previous_niche(fake_cj, monkeypatch, tmp_path):
+    from pinagents.autopilot import _write_join_list
+    seen = {}
+    monkeypatch.setattr(cj, "write_join_list", lambda niche, path, categories=(): seen.update(c=categories))
+    st = {"niche_categories": {"niche": "Rugs", "categories": ["Rugs", "Home"]}}
+    _write_join_list(st, "Rugs", {"results_dir": str(tmp_path)})
+    assert seen["c"] == ["Rugs", "Home"]
+    _write_join_list(st, "pet supplies", {"results_dir": str(tmp_path)})
+    assert seen["c"] == []
+
+
+def test_cj_error_is_shown_when_it_cannot_pick_a_niche(monkeypatch, tmp_path):
+    from pinagents.autopilot import _discover
+    for k, v in {"CJ_API_TOKEN": "t", "CJ_COMPANY_ID": "c", "CJ_WEBSITE_ID": "w",
+                 "AWIN_API_TOKEN": "t", "AWIN_PUBLISHER_ID": "7", "AWIN_FEED_KEY": "k"}.items():
+        monkeypatch.setenv(k, v)
+    def no_categories(*a, **kw):
+        raise ValueError("None of your joined CJ programs lists a category; give --niche.")
+    monkeypatch.setattr(cj, "discover", no_categories)
+    with pytest.raises(ValueError, match="lists a category"):
+        _discover({}, None, FakeClient(), {"results_dir": str(tmp_path)}, "2026-10-25", [])

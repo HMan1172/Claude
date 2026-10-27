@@ -17,6 +17,8 @@ import json
 import os
 from datetime import date, timedelta
 
+import xml.etree.ElementTree as ET
+
 import requests
 
 from .budget_guard import BudgetGuard, SpendRefused, write_json
@@ -47,6 +49,8 @@ EMPTY_BATCH_WAIT_DAYS = 3  # after a batch where every pin failed compliance
 # ad group or ad is tried again after this many days, up to REFUSED_MAX_TRIES times in all.
 REFUSED_RETRY_DAYS = 14
 REFUSED_MAX_TRIES = 3
+# What an affiliate network's API can throw: HTTP and network errors, bad or unexpected data.
+NETWORK_ERRORS = (ValueError, OSError, requests.RequestException, ET.ParseError, csv.Error)
 
 
 def _empty_state() -> dict:
@@ -100,22 +104,30 @@ def run_cycle(niche: str | None, products_csv: str | None, config: dict, client=
         st["niche"] = niche
         _post_due(st, client, config, today, log, save)
         networks = [n for n in (cj, awin) if n.configured()]
+        earnings_ok = True
         if networks:
             config = {**config, "earnings_csv": config["earnings_csv"] or config["network_earnings_path"]}
-            _write_network_earnings(networks, config["earnings_csv"], _days_ago(today, STATS_DAYS), today)
+            try:
+                skipped = _write_network_earnings(networks, config["earnings_csv"], _days_ago(today, STATS_DAYS), today)
+                if skipped:
+                    log.append(f"Skipped {skipped} Awin transactions not in USD: they can't be weighed "
+                               f"against Pinterest's USD spend.")
+            except NETWORK_ERRORS as err:
+                # Without earnings no product can be judged, so nothing should spend until it's back.
+                earnings_ok = False
+                log.append(f"Earnings report failed ({type(err).__name__}: {err}).")
+                _set_campaign(st, client, "PAUSED", "earnings report unavailable; resumes when it's back", log)
             if niche and (st.get("last_join_list") or "") <= _days_ago(today, 7):
-                path = os.path.join(config["results_dir"], "join_list.md")
-                if cj.configured():
-                    cj.write_join_list(niche, path, st.get("niche_categories", []))
-                if awin.configured():
-                    lines = awin.join_list_lines(niche)
-                    with open(path, "a" if cj.configured() else "w", encoding="utf-8") as f:
-                        f.write("\n" + "\n".join(lines) + "\n")
-                st["last_join_list"] = today
-                log.append(f"Ranked programmes worth joining in {path}; joining takes a click on each network.")
-        stats = _run_ads(st, client, guard, config, today, log, save)
-        if stats and (not st["last_lessons"] or st["last_lessons"] <= _days_ago(today, 7)):
-            _learn(st, stats, niche, config, today, log)
+                try:
+                    path = _write_join_list(st, niche, config)
+                    st["last_join_list"] = today
+                    log.append(f"Ranked programmes worth joining in {path}; joining takes a click on each network.")
+                except NETWORK_ERRORS as err:  # a report; never a reason to skip the ads
+                    log.append(f"Join list skipped today ({type(err).__name__}: {err}).")
+        if earnings_ok:
+            stats = _run_ads(st, client, guard, config, today, log, save)
+            if stats and (not st["last_lessons"] or st["last_lessons"] <= _days_ago(today, 7)):
+                _learn(st, stats, niche, config, today, log)
     finally:
         save()
     if not client.live or not client.ads_live:
@@ -125,24 +137,27 @@ def run_cycle(niche: str | None, products_csv: str | None, config: dict, client=
 
 def _discover(st, niche, client, config, today, log) -> tuple[str, str]:
     """Products from every configured network, merged into one CSV. CJ goes first: it can pick
-    the niche when none is given. One network coming up empty doesn't stop the other."""
+    the niche when none is given. One network failing doesn't stop the other."""
     paths, errors = [], []
     out = lambda name: os.path.join(config["results_dir"], f"{name}_products_{today}.csv")
     if cj.configured():
         try:
-            path, niche, st["niche_categories"] = cj.discover(niche, out("cj"), demand=client.keyword_volumes)
+            path, niche, categories = cj.discover(niche, out("cj"), demand=client.keyword_volumes)
+            st["niche_categories"] = {"niche": niche, "categories": categories}
             paths.append(path)
             log.append(f"Found products on CJ for '{niche}' ({path}).")
-        except ValueError as err:
+        except NETWORK_ERRORS as err:
             errors.append(err)
+            log.append(f"CJ found no products ({type(err).__name__}: {err}).")
     if awin.configured():
         if not niche:
-            raise ValueError("Awin can't pick a niche by itself; give --niche.")
+            raise errors[0] if errors else ValueError("Awin can't pick a niche by itself; give --niche.")
         try:
             paths.append(awin.discover(niche, out("awin")))
             log.append(f"Found products on Awin for '{niche}' ({paths[-1]}).")
-        except ValueError as err:
+        except NETWORK_ERRORS as err:
             errors.append(err)
+            log.append(f"Awin found no products ({type(err).__name__}: {err}).")
     if not paths:
         raise errors[0]
     if len(paths) == 1:
@@ -159,12 +174,25 @@ def _discover(st, niche, client, config, today, log) -> tuple[str, str]:
     return merged, niche
 
 
-def _write_network_earnings(networks, path: str, since: str, today: str) -> None:
-    """One earnings CSV from every configured network (each network's link tags are distinct)."""
-    rows = []
+def _write_join_list(st, niche, config) -> str:
+    path = os.path.join(config["results_dir"], "join_list.md")
+    known = st.get("niche_categories") or {}
+    categories = known.get("categories", []) if known.get("niche") == niche else []  # never a past niche's
+    if cj.configured():
+        cj.write_join_list(niche, path, categories)
+    if awin.configured():
+        with open(path, "a" if cj.configured() else "w", encoding="utf-8") as f:
+            f.write("\n" + "\n".join(awin.join_list_lines(niche)) + "\n")
+    return path
+
+
+def _write_network_earnings(networks, path: str, since: str, today: str) -> int:
+    """One earnings CSV from every configured network (each network's link tags are distinct).
+    Returns how many transactions were skipped for not being in USD."""
+    rows, skipped = [], 0
     for n in networks:
         part = f"{path}.{n.__name__.rsplit('.', 1)[-1]}"
-        n.write_earnings(part, since, today)
+        skipped += n.write_earnings(part, since, today) or 0
         with open(part, newline="", encoding="utf-8") as f:
             rows += list(csv.DictReader(f))
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -172,6 +200,7 @@ def _write_network_earnings(networks, path: str, since: str, today: str) -> None
         w = csv.DictWriter(f, fieldnames=["product_id", "date", "earnings", "click_date"])
         w.writeheader()
         w.writerows(rows)
+    return skipped
 
 
 def _drop_dry_ads(st: dict) -> None:
@@ -261,18 +290,24 @@ def _apply_changed_settings(st, client, config, log) -> None:
     otherwise Pinterest keeps enforcing the values from when the campaign and ad groups were made."""
     c = st["campaign"]
     if c["id"] and c.get("cap") != config["ads_total_cap"]:
-        client.update_campaign_cap(c["id"], config["ads_total_cap"])
-        c["cap"] = config["ads_total_cap"]
-        log.append(f"Campaign total cap set to ${config['ads_total_cap']:.2f}.")
+        try:
+            client.update_campaign_cap(c["id"], config["ads_total_cap"])
+            c["cap"] = config["ads_total_cap"]
+            log.append(f"Campaign total cap set to ${config['ads_total_cap']:.2f}.")
+        except (ValueError, requests.HTTPError) as err:  # e.g. below what's already spent
+            log.append(f"Pinterest refused the new total cap ${config['ads_total_cap']:.2f}: {err}")
     active = [g for g in st["groups"].values() if g["status"] == "ACTIVE"]
     # Never more than an even share of the daily cap, or today's authorization would fail and
     # pause the whole campaign.
     budget = min(config["ad_group_daily_budget"], round(config["ads_daily_cap"] / max(1, len(active)), 2))
     for pid, g in st["groups"].items():
         if g["status"] == "ACTIVE" and g["budget"] != budget:
-            client.update_ad_group(g["id"], daily_budget=budget)
-            g["budget"] = budget
-            log.append(f"Ads for {pid} now ${budget:.2f}/day.")
+            try:
+                client.update_ad_group(g["id"], daily_budget=budget)
+                g["budget"] = budget
+                log.append(f"Ads for {pid} now ${budget:.2f}/day.")
+            except (ValueError, requests.HTTPError) as err:  # e.g. below Pinterest's minimum budget
+                log.append(f"Pinterest refused ${budget:.2f}/day for {pid}: {err}")
 
 
 def _calibrate_bids(st, client, by_product, earnings, config, min_bid: float) -> None:
