@@ -91,7 +91,16 @@ pinagents autopilot --niche "home office" --products products.csv  # or use your
 ```
 
 Run `pinagents check` first: it calls Pinterest and CJ read-only and prints OK or the exact
-error for each, so a mismatch with either API shows up before anything is posted or spent.
+error for each, so a mismatch with either API shows up before anything is posted or spent. It
+also shows Pinterest's own click price forecast and expected weekly clicks for your budget (if
+Pinterest has opened its beta estimate API to your app).
+
+**Does a click earn more than it costs?** The autopilot checks this on every click, not per
+product: it bids 40% of what a click is expected to earn, and Pinterest never charges more than
+the bid, so every click it buys costs less than half its expected value. Clicks priced above that
+are simply lost auctions. Expected value starts from the network's EPC and is corrected by what
+your own ads actually earn. Blocking whole products when Pinterest's typical price looked too
+high was tested in the simulator and earned less, because those products still win cheaper clicks.
 
 Or run one cycle a day from cron: `15 7 * * * cd /path/to/PinAgents && .venv/bin/pinagents autopilot --niche "home office" --products products.csv >> autopilot.log 2>&1`
 

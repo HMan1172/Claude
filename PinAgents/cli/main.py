@@ -95,6 +95,18 @@ def cmd_autopilot(args):
         time.sleep(args.loop * 3600)
 
 
+def _forecast(client, cfg) -> str:
+    from datetime import date
+
+    est = client.delivery_estimate(cfg["ads_daily_cap"], date.today().isoformat())
+    if not est:
+        return "not available to this app (Pinterest's estimate API is in beta)"
+    return (f"about ${est['cpc']:.2f} per click (${est.get('cpc_lower', 0):.2f}-"
+            f"{est.get('cpc_upper', 0):.2f}), {est.get('weekly_click') or 0:,.0f} clicks a week at "
+            f"${cfg['ads_daily_cap']:.2f}/day. The autopilot bids 40% of what a click earns, so it "
+            f"wins the clicks priced below that and skips the rest.")
+
+
 def cmd_check(args):
     """Calls every outside service read-only and reports what works, before any money moves."""
     import tempfile
@@ -113,6 +125,7 @@ def cmd_check(args):
             ("Pinterest board", lambda: client._request("GET", f"/boards/{cfg['pinterest_board_id']}")["name"]),
             ("Pinterest ad account", lambda: client._request(
                 "GET", f"/ad_accounts/{cfg['pinterest_ad_account_id']}")["name"]),
+            ("Pinterest click price forecast", lambda: _forecast(client, cfg)),
         ]
     if cj.configured():
         found = {}

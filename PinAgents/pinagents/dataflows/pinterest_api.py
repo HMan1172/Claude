@@ -123,6 +123,32 @@ class PinterestClient:
             ad["destination_url"] = destination_url
         return self._batch_create("ads", ad)
 
+    def delivery_estimate(self, daily_budget: float, start_date: str) -> dict | None:
+        """Pinterest's forecast for a traffic campaign with our targeting, before spending anything:
+        {"cpc", "cpc_lower", "cpc_upper", "weekly_click"} in dollars. This endpoint is in beta and
+        not open to every app, so None means "no estimate" and the caller decides without it."""
+        if not self.ads_live:
+            return None
+        body = [{"objective_type": "CONSIDERATION", "budget_duration_type": "FIXED_DAILY",
+                 "daily_spend_cap": int(daily_budget * MICRO), "start_date": start_date,
+                 "ad_groups": [{"auto_targeting_enabled": True,
+                                "targeting_spec": {"LOCATION": self.config["ads_countries"]}}]}]
+        try:
+            out = self._request("POST", f"/ad_accounts/{self.ad_account}/campaigns/delivery_estimates", json=body)
+        except requests.HTTPError as err:
+            if err.response is not None and err.response.status_code in (400, 401, 403, 404):
+                return None
+            raise
+        m = out.get("derived_metrics") or {}
+        if not m.get("cpc"):
+            return None
+        # The docs don't state the unit; budgets in this API are micro-currency, so treat
+        # anything above $100 per click as micro-currency.
+        scale = MICRO if m["cpc"] > 100 else 1
+        est = {k: m[k] / scale for k in ("cpc", "cpc_lower", "cpc_upper") if m.get(k) is not None}
+        est["weekly_click"] = m.get("weekly_click")
+        return est
+
     def update_ad_group(self, ad_group_id: str, max_cpc: float) -> None:
         if not self.ads_live or ad_group_id.startswith("dry-"):
             return

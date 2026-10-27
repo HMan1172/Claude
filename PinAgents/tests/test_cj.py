@@ -157,3 +157,15 @@ def test_rejected_field_names_come_back_with_the_real_ones(fake_cj, monkeypatch)
     monkeypatch.setattr(cj.requests, "post", post)
     with pytest.raises(ValueError, match="LinkCode has: clickURL, imageURL"):
         cj.program_products({"id": "111"}, [])
+
+
+def test_delivery_estimate_converts_micro_currency(monkeypatch):
+    from pinagents.dataflows.pinterest_api import PinterestClient
+    client = PinterestClient({"allow_ads": True, "pinterest_ad_account_id": "1", "ads_countries": ["US"]})
+    client.token = "t"
+    sent = {}
+    monkeypatch.setattr(client, "_request", lambda method, path, **kw: sent.update(kw) or {
+        "derived_metrics": {"cpc": 420000, "cpc_lower": 250000, "cpc_upper": 900000, "weekly_click": 85}})
+    est = client.delivery_estimate(5.0, "2026-10-27")
+    assert est == {"cpc": 0.42, "cpc_lower": 0.25, "cpc_upper": 0.9, "weekly_click": 85}
+    assert sent["json"][0]["daily_spend_cap"] == 5_000_000
