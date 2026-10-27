@@ -66,8 +66,8 @@ def test_joined_programs_reads_sale_commission_and_epc(fake_cj):
 
 
 def test_discover_writes_a_products_csv(fake_cj, tmp_path):
-    path, niche = cj.discover("home decor", str(tmp_path / "p.csv"))
-    assert niche == "home decor"
+    path, niche, categories = cj.discover("home decor", str(tmp_path / "p.csv"))
+    assert niche == "home decor" and categories == ["Rugs"]
     products = load_products(path)
     assert [p["id"] for p in products] == ["cj9001"]   # the http link was dropped
     p = products[0]
@@ -249,3 +249,18 @@ def test_autopilot_writes_the_join_list_weekly(fake_cj, tmp_path):
     assert any("worth joining" in line for line in log)
     assert not any("worth joining" in line for line in run_cycle("Rugs", None, c, client, today="2026-10-28"))
     assert any("worth joining" in line for line in run_cycle("Rugs", None, c, client, today="2026-11-01"))
+
+
+def test_join_list_counts_categories_that_supplied_products_as_the_niche(fake_cj, monkeypatch, tmp_path):
+    notjoined = b"""<cj-api><advertisers>
+     <advertiser><advertiser-id>7</advertiser-id><advertiser-name>Big Lamps</advertiser-name>
+      <three-month-epc>90.00</three-month-epc><primary-category><child>Lighting</child></primary-category>
+      <actions><action><type>sale</type><commission><default>8%</default></commission></action></actions></advertiser>
+     <advertiser><advertiser-id>9</advertiser-id><advertiser-name>Desk Depot</advertiser-name>
+      <three-month-epc>20.00</three-month-epc><primary-category><child>Furniture</child></primary-category>
+      <actions><action><type>sale</type><commission><default>10%</default></commission></action></actions></advertiser>
+    </advertisers></cj-api>"""
+    monkeypatch.setattr(cj.http, "request", lambda method, url, **kw: Resp(content=notjoined))
+    cj.write_join_list("home office", str(tmp_path / "join.md"), categories=["Furniture"])
+    text = (tmp_path / "join.md").read_text()
+    assert text.index("Desk Depot") < text.index("Big Lamps")   # "home office" shares no word with "Furniture"

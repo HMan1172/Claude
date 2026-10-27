@@ -115,11 +115,14 @@ def _programs(relationship: str, max_pages: int = 1000) -> list[dict]:
     return programs
 
 
-def write_join_list(niche: str, path: str, limit: int = 20) -> int:
+def write_join_list(niche: str, path: str, categories=(), limit: int = 20) -> int:
     """Rank programs you haven't joined by earnings per click, those in the niche first, and write
-    them to a Markdown checklist. Joining stays a click in CJ: advertisers approve their publishers."""
+    them to a Markdown checklist. Joining stays a click in CJ: advertisers approve their publishers.
+
+    A program fits the niche when its CJ category is one that supplied products for the niche
+    (categories) or shares a word with the niche."""
     words = set(re.findall(r"[a-z0-9]+", niche.lower()))
-    fits = lambda p: bool(words & set(re.findall(r"[a-z0-9]+", p["category"].lower())))
+    fits = lambda p: p["category"] in categories or bool(words & set(re.findall(r"[a-z0-9]+", p["category"].lower())))
     ranked = sorted(_programs("notjoined", max_pages=10),
                     key=lambda p: (not fits(p), -(p["epc"] or 0), -p["commission_rate"]))[:limit]
     lines = [f"# CJ programs worth joining for '{niche}'", "",
@@ -182,16 +185,18 @@ def pick_niche(programs: list[dict], demand=None) -> str:
     return max(searched or scores, key=(searched or scores).get)
 
 
-def discover(niche: str | None, out_path: str, demand=None) -> tuple[str, str]:
+def discover(niche: str | None, out_path: str, demand=None) -> tuple[str, str, list[str]]:
     """Write a products CSV from joined CJ programs, best earners per click first.
 
-    With no niche, picks one (pick_niche) and takes products from that category's programs."""
+    With no niche, picks one (pick_niche) and takes products from that category's programs.
+    Returns the CSV path, the niche, and the CJ categories of the programs that supplied products
+    (what the niche means in CJ's terms, for the join list)."""
     programs = sorted(joined_programs(), key=lambda p: -(p["epc"] or 0))
     keywords = niche.split() if niche else []
     if not niche:
         niche = pick_niche(programs, demand)
         programs = [p for p in programs if p["category"] == niche]
-    rows = []
+    rows, categories = [], []
     for program in programs:
         for item in program_products(program, keywords):
             url = ((item.get("linkCode") or {}).get("clickUrl") or "").strip()
@@ -207,6 +212,8 @@ def discover(niche: str | None, out_path: str, demand=None) -> tuple[str, str]:
                 "epc": "" if program["epc"] is None else program["epc"],
                 "image_url": (item.get("imageLink") or "").strip(),
             })
+            if program["category"] and program["category"] not in categories:
+                categories.append(program["category"])
         if len(rows) >= CANDIDATES:
             break
     if not rows:
@@ -216,7 +223,7 @@ def discover(niche: str | None, out_path: str, demand=None) -> tuple[str, str]:
         w = csv.DictWriter(f, fieldnames=list(rows[0]))
         w.writeheader()
         w.writerows(rows[:CANDIDATES])
-    return out_path, niche
+    return out_path, niche, categories
 
 
 def _commissions(start: date, end: date, click_dates: bool) -> dict:

@@ -94,8 +94,8 @@ def run_cycle(niche: str | None, products_csv: str | None, config: dict, client=
             log.append(f"Last batch had no pins pass compliance; next try after {EMPTY_BATCH_WAIT_DAYS} days.")
         elif not st["queue"]:
             if not products_csv:
-                products_csv, niche = cj.discover(niche, os.path.join(config["results_dir"], f"cj_products_{today}.csv"),
-                                                  demand=client.keyword_volumes)
+                products_csv, niche, st["niche_categories"] = cj.discover(
+                    niche, os.path.join(config["results_dir"], f"cj_products_{today}.csv"), demand=client.keyword_volumes)
                 log.append(f"Found products on CJ for '{niche}' ({products_csv}).")
             _generate(st, niche, products_csv, config, today, log, client.trending_keywords(niche))
             st["empty_batch"] = None if st["queue"] else today
@@ -106,7 +106,7 @@ def run_cycle(niche: str | None, products_csv: str | None, config: dict, client=
             cj.write_earnings(config["earnings_csv"], _days_ago(today, STATS_DAYS), today)
             if niche and (st.get("last_join_list") or "") <= _days_ago(today, 7):
                 path = os.path.join(config["results_dir"], "join_list.md")
-                n = cj.write_join_list(niche, path)
+                n = cj.write_join_list(niche, path, st.get("niche_categories", []))
                 st["last_join_list"] = today
                 log.append(f"Ranked {n} CJ programs worth joining in {path}; joining takes a click in CJ.")
         stats = _run_ads(st, client, guard, config, today, log, save)
