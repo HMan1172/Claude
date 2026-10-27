@@ -49,6 +49,7 @@ class FakeClient:
         self.calls.append(("status", kind, tuple(ids), status))
 
     def ad_stats(self, ad_ids, start, end):
+        self.calls.append(("stats", end))
         return {i: self.stats[i] for i in ad_ids if i in self.stats}
 
     def campaign_daily_spend(self, campaign_id, start, end):
@@ -178,3 +179,11 @@ def test_network_conversion_rate_sets_the_bid(tmp_path):
     run_cycle("home", str(products), c, client, today="2026-10-25")
     run_cycle("home", str(products), c, client, today="2026-10-26")
     assert state(tmp_path)["groups"]["a"]["bid"] == 0.2   # 5% x $10 commission x 0.4
+
+
+def test_products_are_judged_on_spend_old_enough_for_sales_to_post(tmp_path):
+    c, client = full_config(tmp_path), FakeClient()
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-25")
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-26")
+    ends = [x[1] for x in client.calls if x[0] == "stats"]
+    assert "2026-10-26" in ends and "2026-10-22" in ends

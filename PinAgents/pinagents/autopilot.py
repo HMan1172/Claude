@@ -6,7 +6,8 @@ Each cycle:
      no products CSV is given).
   3. Posts the pins that are due (at most pins_per_day).
   4. Ads: syncs real spend into BudgetGuard, pauses products that lose money or use up their
-     test budget without proving themselves, authorizes today's budget, and promotes new pins.
+     test budget without proving themselves (judged on spend old enough for its sales to have
+     posted), authorizes today's budget, and promotes new pins.
   5. Once a week, turns ad results into lessons the agents read on the next batch.
 
 Every rule that spends money is plain code. The agents write pins; they never set budgets or bids.
@@ -34,6 +35,9 @@ CALIBRATION_SALES = 5
 # Bid 40% of what a click should earn. On a fixed daily budget, lower bids buy cheaper clicks;
 # experiments/simulate.py found 60% beat 30% across cheap, typical and expensive markets.
 BID_MARGIN = 0.6
+# Sales reach the affiliate report days after the click (purchase delay, then posting). In
+# simulation, judging products on spend this old beat judging on today's spend on a held-out seed.
+ATTRIBUTION_DAYS = 4
 
 
 def _empty_state() -> dict:
@@ -226,9 +230,12 @@ def _run_ads(st, client, guard, config, today, log) -> dict:
 
     # 2. Score each advertised product; pause losers.
     stats = client.ad_stats(list(st["ads"].values()), since, today)
+    # Products are judged on spend from ATTRIBUTION_DAYS ago, so sales still on their way to the
+    # affiliate report aren't missing when a product is weighed against its cost.
+    judged = client.ad_stats(list(st["ads"].values()), since, _days_ago(today, ATTRIBUTION_DAYS))
     by_product = {}
     for key, ad_id in st["ads"].items():
-        s, pid = stats.get(ad_id), st["posted"][key]["product_id"]
+        s, pid = judged.get(ad_id), st["posted"][key]["product_id"]
         if s:
             t = by_product.setdefault(pid, {"spend": 0.0, "clicks": 0})
             t["spend"] += s["spend"]

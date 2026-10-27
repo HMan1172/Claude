@@ -43,7 +43,8 @@ SCENARIOS = {
 }
 # Median cost per click per product: published 2026 Pinterest benchmarks put most CPCs at
 # $0.30-1.50 (home decor $0.10-0.50, one benchmark's median $1.50). Pinterest's US CPC floor is $0.10.
-MARKET = dict(median_cpc=(0.25, 1.00), spread=0.6, auctions=(50, 400))
+# Sales post to the affiliate report 0 to sale_delay days after the click (cookie windows, posting lag).
+MARKET = dict(median_cpc=(0.25, 1.00), spread=0.6, auctions=(50, 400), sale_delay=4)
 
 
 class SimMarket:
@@ -52,7 +53,7 @@ class SimMarket:
 
     def __init__(self, products: dict, rng: random.Random, earnings_csv: str):
         self.products, self.rng, self.earnings_csv = products, rng, earnings_csv
-        self.groups, self.ads, self.daily_spend = {}, {}, {}
+        self.groups, self.ads, self.daily_spend, self.pending = {}, {}, {}, []
         self.campaign_active, self.n = True, 0
         with open(earnings_csv, "w", newline="") as f:
             csv.writer(f).writerow(["product_id", "date", "earnings"])
@@ -77,7 +78,7 @@ class SimMarket:
 
     def create_ad(self, ad_group_id, pin_id, name, destination_url=None):
         aid = self._id("ad")
-        self.ads[aid] = {"gid": ad_group_id, "spend": 0.0, "clicks": 0, "impressions": 0}
+        self.ads[aid] = {"gid": ad_group_id, "days": {}}
         return aid
 
     def set_status(self, kind, ids, status):
@@ -88,7 +89,12 @@ class SimMarket:
                 self.groups[i]["active"] = status == "ACTIVE"
 
     def ad_stats(self, ad_ids, start, end):
-        return {a: dict(self.ads[a]) for a in ad_ids if a in self.ads}
+        out = {}
+        for a in ad_ids:
+            days = [v for d, v in self.ads.get(a, {}).get("days", {}).items() if start <= d <= end]
+            if days:
+                out[a] = {k: sum(v[k] for v in days) for k in ("spend", "clicks", "impressions")}
+        return out
 
     def campaign_daily_spend(self, campaign_id, start, end):
         return dict(self.daily_spend)
@@ -96,7 +102,6 @@ class SimMarket:
     def run_day(self, day: str) -> tuple[float, float]:
         """Deliver one day of clicks for every active ad; returns (spend, earnings)."""
         spend_total = earned_total = 0.0
-        rows = []
         for aid, ad in self.ads.items():
             g = self.groups[ad["gid"]]
             if not (self.campaign_active and g["active"]):
@@ -118,14 +123,15 @@ class SimMarket:
             earned = 0.0
             for _ in range(clicks):
                 if self.rng.random() < p["cr"]:
-                    earned += p["price"] * self.rng.uniform(*p["cart"]) * p["rate"]
-            ad["spend"] += spend
-            ad["clicks"] += clicks
-            ad["impressions"] += clicks * 50
+                    sale = p["price"] * self.rng.uniform(*p["cart"]) * p["rate"]
+                    posts = (date.fromisoformat(day) + timedelta(days=self.rng.randint(0, MARKET["sale_delay"])))
+                    self.pending.append((posts.isoformat(), g["pid"], round(sale, 2)))
+                    earned += sale
+            ad["days"][day] = {"spend": spend, "clicks": clicks, "impressions": clicks * 50}
             spend_total += spend
             earned_total += earned
-            if earned:
-                rows.append([g["pid"], day, round(earned, 2)])
+        rows = [[pid, posted, amount] for posted, pid, amount in self.pending if posted <= day]
+        self.pending = [x for x in self.pending if x[0] > day]
         self.daily_spend[day] = round(spend_total, 2)
         with open(self.earnings_csv, "a", newline="") as f:
             csv.writer(f).writerows(rows)
