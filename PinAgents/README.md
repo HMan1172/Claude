@@ -22,13 +22,13 @@ START ─┬─> Product Scout ──┐
 
 ## Stages
 
-1. **Stage 1 (this release): no money.** Agents pick products and write pins with images.
+1. **Stage 1: no money.** `pinagents run`: agents pick products and write pins with images.
    You post them (by hand or with Pinterest's scheduler) and fill in the tracking sheet.
 2. **Stage 2: automatic posting** through Pinterest's official v5 API. Needs a Business account,
-   a developer app and Standard access. The client is in `pinagents/dataflows/pinterest_api.py`
-   and runs as a dry run until you set `allow_posting: True`.
-3. **Stage 3: ads.** `pinagents autopilot` runs Stages 1-3 unattended (see below).
-   `BudgetGuard` enforces a daily cap, a total cap and a kill switch in plain code.
+   a developer app and Standard access. Dry run until you set `PINAGENTS_ALLOW_POSTING=1`.
+3. **Stage 3: ads.** `pinagents autopilot` runs all three stages unattended (see below), with ads
+   off until `PINAGENTS_ALLOW_ADS=1`. `BudgetGuard` enforces a daily cap, a total cap and a kill
+   switch in plain code.
 
 ## Install
 
@@ -85,15 +85,16 @@ can see the whole flow before paying for an API key.
 
 ```bash
 pinagents check                                      # test every connection, read-only
-pinagents autopilot --loop 24                        # niche and products picked from CJ
+pinagents autopilot --loop 24                        # niche picked from CJ, products from CJ/Awin
 pinagents autopilot --niche "home office" --loop 24  # or choose the niche
 pinagents autopilot --niche "home office" --products products.csv  # or use your own list
 ```
 
-Run `pinagents check` first: it calls Pinterest and CJ read-only, sends your AI provider one tiny
-test message per model, and prints OK or the exact error for each, so a mismatch with either API shows up before anything is posted or spent. It
-also shows Pinterest's own click price forecast and expected weekly clicks for your budget (if
-Pinterest has opened its beta estimate API to your app).
+Run `pinagents check` first: it calls Pinterest, CJ and Awin read-only, sends your AI provider one
+tiny test message per model, and prints OK or the exact error for each, so a mismatch with any API
+shows up before anything is posted or spent. When CJ rejects a field name it prints the real names
+from CJ's schema. It also shows Pinterest's own click price forecast and expected weekly clicks for
+your budget (if Pinterest has opened its beta estimate API to your app).
 
 **Does a click earn more than it costs?** The autopilot checks this on every click, not per
 product: it bids 40% of what a click is expected to earn, and Pinterest never charges more than
@@ -108,7 +109,10 @@ Each cycle:
 
 1. Refreshes the Pinterest access token (needs `PINTEREST_APP_ID`, `PINTEREST_APP_SECRET`,
    `PINTEREST_REFRESH_TOKEN` once; the rotating refresh token is then kept in `~/.pinagents/`).
-2. When no pins are waiting, the agents write a new batch (using lessons from earlier results).
+2. When no pins are waiting, the agents write a new batch, using lessons from earlier results and
+   Pinterest's real trending searches for the niche (seasonal and growing, with their growth).
+   Product photos from the network's feed go on the pin images when available. If every pin of a
+   batch fails compliance, it waits 3 days before paying for another.
    Without `--products`, it first searches every CJ Affiliate program you've joined for products
    matching the niche, best earnings per click first, and passes the top 40 to the Product Scout.
    Without `--niche`, it picks the category of your best-earning joined programs among those
@@ -118,16 +122,24 @@ Each cycle:
 4. Runs ads, all in plain code:
    - One traffic campaign with Pinterest's own lifetime spend cap set to `ads_total_cap`.
    - One ad group per product, paying per outbound click with the **bid capped at 40% of what a
-     click should earn**: `conversion_rate x price x commission x 0.4` (`assumed_conversion_rate`,
-     1.75%, when the CSV has none). Products that can't afford Pinterest's $0.10 minimum bid are
-     never advertised, and neither are Amazon links (see below).
+     click should earn**: the network's EPC, else `conversion_rate x price x commission`
+     (`assumed_conversion_rate`, 1.75%, when the CSV has none), times 0.4. Products that can't
+     afford Pinterest's minimum bid (asked from Pinterest; `ads_min_bid`, $0.10, if it won't say)
+     are never advertised, and neither are Amazon links (see below).
    - Every dollar of daily budget is authorized by `BudgetGuard` first; real spend from Pinterest
      replaces the authorized amount once a day is over.
    - Bids are scaled down by how our own ads earn against the network's EPC, pooled across all
      products and weighted like 5 average sales, so one unlucky week can't crash them.
    - A product is paused when it has 20+ clicks and has earned less than it cost, or when it has
-     spent `ads_test_spend_per_product` without proving it earns more than it costs.
+     spent `ads_test_spend_per_product` without proving it earns more than it costs. Products are
+     judged on spend old enough for its sales to have posted: 4 days, or the delay measured from
+     your sales' click dates once there are 10 of them.
+   - If Pinterest refuses a product's ads, the reason is logged, other products carry on, and it
+     is retried after 14 days (3 tries in all).
+   - Raising `ads_total_cap` or the per-product budget updates what's already running on Pinterest.
    - `~/.pinagents/STOP` pauses the campaign on the next cycle.
+   - Every Pinterest create is saved to the state file at once (written atomically), so a crash
+     can't make the next cycle post or create anything twice.
 5. Once a week, ad results become lessons for the agents' next batch.
 
 Until you set `PINAGENTS_ALLOW_POSTING=1` / `PINAGENTS_ALLOW_ADS=1` (plus a token, board and ad
@@ -168,22 +180,24 @@ auction for 60 days per trial ($5/day, $100 total cap, 5 products). Click prices
 rates and conversion rates come from published benchmarks where they exist (see the comments in
 the script); the rest are assumptions. Read it as how the rules behave, not as a forecast.
 
-Mean profit per 60 days at typical click prices ($0.25-1.00 median), 200 trials each, with and
-without a network-reported `conversion_rate` (simulated as up to ~40% wrong):
+Mean profit per 60 days at typical click prices ($0.25-1.00 median), 200 trials each on a seed no
+tuning used, with and without a network-reported `conversion_rate` (simulated as up to ~40% wrong):
 
 | Scenario | Without conversion_rate | With conversion_rate | Worst 10% (with) |
 |---|---|---|---|
-| Home brand programs (4-12% commission) | +$12, 14% of runs profit | +$51, 59% | about -$1 |
-| Top brand programs (10-20%) | +$134, 80% | +$152, 87% | about $0 |
-| High-ticket (15-40%, rare sales) | +$86, 76% | +$229, 90% | about -$6 |
+| Home brand programs (4-12% commission) | +$6, 8% of runs profit | +$45, 56% | about -$2 |
+| Top brand programs (10-20%) | +$139, 80% | +$162, 94% | about +$15 |
+| High-ticket (15-40%, rare sales) | +$132, 84% | +$254, 93% | about +$40 |
 | Weak conversion | $0 (never bids) | $0 | $0 |
 
-In a cheap market ($0.10-0.50) profits roughly double; in an expensive one ($0.70-2.90) they
-mostly vanish (+$2 to +$70) and high-ticket's worst 10% lose about $30.
+In a cheap market ($0.10-0.50) that becomes +$119, +$255 and +$336; in an expensive one
+($0.70-2.90) +$2, +$22 and +$68, with high-ticket's worst 10% losing about $35.
 
 Tried and rejected: bids that learn from early sales (sales are too rare, so good products got cut),
 moving freed budget to surviving products, raising bids on winners (on a fixed budget that
-just buys pricier clicks), and growing budgets only on proven winners (no better than a flat budget).
+just buys pricier clicks), growing budgets only on proven winners (no better than a flat budget),
+starting bids below full value before data arrives (helped only if network EPC was badly
+overstated), and skipping products whose forecast click price looked too high (lost cheap clicks).
 
 ### Scaling up
 
@@ -193,9 +207,9 @@ cleverer rules. Weekly profit after 8 weeks, 30 products at $20/day each (`PINAG
 
 | Programs | Cheap clicks ($0.10-0.50) | Typical clicks ($0.25-1.00) |
 |---|---|---|
-| Home brands (4-12%) | ~$430/week on ~$225 spend | ~$80/week on ~$50 spend |
-| Top brands (10-20%) | ~$2,400/week on ~$830 spend | ~$600/week on ~$300 spend |
-| High-ticket (15-40%) | ~$5,800/week on ~$1,700 spend | ~$1,900-2,100/week on ~$730-870 spend |
+| Home brands (4-12%) | ~$530/week on ~$220 spend | ~$85/week on ~$35 spend |
+| Top brands (10-20%) | ~$2,750/week on ~$870 spend | ~$500/week on ~$245 spend |
+| High-ticket (15-40%) | ~$5,600/week on ~$1,660 spend | ~$2,100/week on ~$770 spend |
 
 The upper rows rest on an unsourced assumption: that each product can win 50-400 auctions a day.
 If Pinterest has fewer clicks to sell in your niche, scale stops there whatever the budget. Raise
@@ -229,7 +243,8 @@ print(save_run(state, config))
 ## Rules the code enforces
 
 - The affiliate disclosure is added to the start of every description in code, so it can't be left out.
-- Shortened or cloaked links and non-https links are rejected.
+- Link-shortener links (bit.ly and the like) and non-https links are rejected; networks' own
+  tracking links are fine.
 - Unprovable health, weight, money or safety claims and first-person "I bought this" testimonials are rejected.
 - Pins that still fail after two rewrites are dropped, never scheduled.
 - Ad spend can only go through `BudgetGuard`. Create `~/.pinagents/STOP` to halt all spending.
