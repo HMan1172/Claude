@@ -83,17 +83,19 @@ def run_cycle(niche: str | None, products_csv: str | None, config: dict, client=
         guard_cfg["ads_ledger_path"] = _dry_path(config["ads_ledger_path"])
     guard = BudgetGuard.from_config(guard_cfg)
 
+    if client.live and not config.get("pinterest_board_id"):
+        raise ValueError("Posting is on but PINTEREST_BOARD_ID isn't set.")
     st = _empty_state()
     if os.path.exists(state_path):
         with open(state_path, encoding="utf-8") as f:
             st.update(json.load(f))
+        st.pop("earnings_failed_days", None)  # replaced by earnings_failing_since
     def save():  # after every Pinterest create, so a crash can't lead to posting something twice
         write_json(state_path, st)
 
     try:
         if client.ads_live:
             _drop_dry_ads(st)
-        st.pop("earnings_failed_days", None)  # replaced by earnings_failing_since
         niche = niche or st.get("niche")  # an automatically picked niche sticks between batches
         empty = st.get("empty_batch")
         if not st["queue"] and empty and empty > _days_ago(today, EMPTY_BATCH_WAIT_DAYS):
@@ -120,12 +122,17 @@ def run_cycle(niche: str | None, products_csv: str | None, config: dict, client=
                 earnings_ok = False
                 since = st["earnings_failing_since"] = st.get("earnings_failing_since") or today
                 log.append(f"Earnings report failed ({type(err).__name__}: {err}).")
-                paused = _set_campaign(st, client, "PAUSED", "earnings report unavailable; resumes when it's back", log)
+                paused = _set_campaign(st, client, "PAUSED", "earnings report unavailable; resumes when it's back",
+                                       log) == "ok"
                 if since <= _days_ago(today, EARNINGS_ALERT_DAYS - 1):
-                    ads = ("No ads start" if not st["campaign"]["id"] else "Ads stay paused" if paused else "")
+                    if not st["campaign"]["id"]:
+                        ads = "No ads start until it's fixed."
+                    elif paused:
+                        ads = "Ads stay paused until it's fixed."
+                    else:
+                        ads = "Ads are still running (see above)."
                     log.append(f"ATTENTION: the earnings report has failed since {since}, so this is likely "
-                               f"not an outage." + (f" {ads} until it's fixed." if ads else "")
-                               + " Run `pinagents check` for details.")
+                               f"not an outage. {ads} Run `pinagents check` for details.")
             if niche and (st.get("last_join_list") or "") <= _days_ago(today, 7):
                 try:
                     path = _write_join_list(st, niche, config)
@@ -247,6 +254,13 @@ def _post_due(st, client, config, today, log, save=lambda: None):
         try:
             res = client.create_pin(p, p["image"])
         except PINTEREST_WRITE_ERRORS as err:
+            if isinstance(err, (requests.ReadTimeout, requests.exceptions.ChunkedEncodingError)):
+                # The request reached Pinterest and the reply was lost: it may have posted.
+                st["queue"].remove(p)
+                log.append(f"Pin {p['key']} may or may not have posted (reply lost); not retried, "
+                           f"to avoid a duplicate.")
+                save()
+                break
             if not _refused(err):  # passing trouble: the rest can wait for the next cycle
                 log.append(f"Pinterest couldn't take pins today ({type(err).__name__}: {err}); trying next cycle.")
                 break
@@ -272,7 +286,9 @@ def _refused(err) -> bool:
     if isinstance(err, PinterestRefused):
         return True
     status = getattr(getattr(err, "response", None), "status_code", None)
-    return isinstance(err, requests.HTTPError) and status is not None and 400 <= status < 500 and status != 429
+    # 401/403 mean the login or its permissions failed for everything, not that this item is refused.
+    return (isinstance(err, requests.HTTPError) and status is not None and 400 <= status < 500
+            and status not in (401, 403, 429))
 
 
 def _pinterest(log, what, call, *args, **kw) -> str:
@@ -286,20 +302,24 @@ def _pinterest(log, what, call, *args, **kw) -> str:
         return "refused" if _refused(err) else "failed"
 
 
-def _set_campaign(st, client, status, why, log) -> bool:
-    """True once the campaign has the status (or there's no campaign yet)."""
+def _set_campaign(st, client, status, why, log) -> str:
+    """"ok" once the campaign has the status (or there's no campaign yet), else "refused"/"failed"."""
     c = st["campaign"]
     if not c["id"] or c["status"] == status:
-        return True
-    if _pinterest(log, f"set the campaign {status.lower()} ({why})", client.set_status,
-                  "campaigns", [c["id"]], status) != "ok":
+        return "ok"
+    result = _pinterest(log, f"set the campaign {status.lower()} ({why})", client.set_status,
+                        "campaigns", [c["id"]], status)
+    if result != "ok":
         if status == "PAUSED":
             log.append("ATTENTION: the campaign is still running on its current bids and caps; "
                        "the next cycle tries to pause it again.")
-        return False
+        elif result == "refused":
+            log.append("ATTENTION: Pinterest refuses to resume the campaign; check it in Pinterest Ads "
+                       "Manager (archived or under review?). No new ads start until it runs.")
+        return result
     c["status"] = status
     log.append(f"Campaign {status.lower()}: {why}")
-    return True
+    return "ok"
 
 
 def _load_earnings(path: str, since: str) -> dict:
@@ -488,23 +508,28 @@ def _run_ads(st, client, guard, config, today, log, save=lambda: None) -> dict:
 
     # 3. Authorize today's budget for ad groups already running.
     active = [g for g in st["groups"].values() if g["status"] == "ACTIVE"]
-    needed = sum(g["budget"] for g in active) - guard.spent_today(today)
+    needed = round(sum(g["budget"] for g in active) - guard.spent_today(today), 2)
     if needed > 0.005:
         try:
-            guard.authorize(round(needed, 2), today)
+            guard.authorize(needed, today)
         except SpendRefused as err:
             _set_campaign(st, client, "PAUSED", str(err), log)
             return stats
-    if not _set_campaign(st, client, "ACTIVE", "within budget", log):
-        return stats  # don't authorize budget or start ads under a campaign that is still paused
+    if _set_campaign(st, client, "ACTIVE", "within budget", log) != "ok":
+        if needed > 0.005:
+            guard.release(needed, today)  # nothing runs under a campaign that is still paused
+        return stats
 
     # 4. Promote posted pins that don't have an ad yet.
     budget = config["ad_group_daily_budget"]
     refused = st.setdefault("refused", {})
+    attempted = set()  # products whose ad group failed this cycle: once per cycle is enough
     for key, p in st["posted"].items():
         if key in st["ads"] or (key in refused and not _retry_due(refused[key], today)):
             continue
         pid = p["product_id"]
+        if pid in attempted:
+            continue
         group = st["groups"].get(pid, {})
         if group.get("status") == "REFUSED" and _retry_due(group, today):
             del st["groups"][pid]  # try the ad group again; its try count carries over below
@@ -530,12 +555,15 @@ def _run_ads(st, client, guard, config, today, log, save=lambda: None) -> dict:
                     cid = client.create_campaign(f"PinAgents {today}", config["ads_total_cap"])
                 except PINTEREST_WRITE_ERRORS as err:
                     log.append(f"Pinterest couldn't create the campaign: {type(err).__name__}: {err}")
+                    guard.release(budget, today)
                     break
                 st["campaign"] = {"id": cid, "status": "ACTIVE", "cap": config["ads_total_cap"]}
                 save()
             try:
                 group_id = client.create_ad_group(cid, f"PinAgents {pid}", budget, bid)
             except PINTEREST_WRITE_ERRORS as err:  # one refused product mustn't stop the rest
+                guard.release(budget, today)
+                attempted.add(pid)
                 if not _refused(err):  # passing trouble: try again next cycle, no strike
                     log.append(f"Pinterest couldn't create the ad group for {pid} today: {err}")
                     if group:

@@ -57,6 +57,15 @@ class BudgetGuard:
         ledger["total"] = round(ledger["total"] + amount, 2)
         self._save(ledger)
 
+    def release(self, amount: float, today: str | None = None) -> None:
+        """Give back an authorization that won't be used (the ad it was for couldn't be created)."""
+        today = today or date.today().isoformat()
+        ledger = self._ledger()
+        give = min(amount, ledger["days"].get(today, 0.0))
+        ledger["days"][today] = round(ledger["days"].get(today, 0.0) - give, 2)
+        ledger["total"] = round(ledger["total"] - give, 2)
+        self._save(ledger)
+
     def settle(self, day: str, actual: float) -> None:
         """Replace what was authorized for a finished day with what was really spent."""
         ledger = self._ledger()

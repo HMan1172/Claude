@@ -82,7 +82,7 @@ def cfg(tmp_path, **kw):
 
 def full_config(tmp_path, **kw):
     from pinagents.default_config import DEFAULT_CONFIG
-    return {**DEFAULT_CONFIG, **cfg(tmp_path, **kw)}
+    return {**DEFAULT_CONFIG, "pinterest_board_id": "board1", **cfg(tmp_path, **kw)}
 
 
 def state(tmp_path):
@@ -487,3 +487,73 @@ def test_a_plain_value_error_from_the_client_is_a_bug_and_surfaces(tmp_path):
     client.create_ad_group = bug
     with pytest.raises(ValueError, match="invalid literal"):
         run_cycle("home office", PRODUCTS, c, client, today="2026-10-26")
+
+
+class _Status:
+    def __init__(self, code):
+        self.status_code = code
+
+
+def test_an_expired_login_is_not_counted_as_refusing_pins(tmp_path):
+    import requests
+    c, client = full_config(tmp_path), FakeClient()
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-25")
+
+    def unauthorized(pin, image_path):
+        raise requests.HTTPError("401 Unauthorized", response=_Status(401))
+    client.create_pin = unauthorized
+    for day in ["2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29"]:
+        run_cycle("home office", PRODUCTS, c, client, today=day)
+    assert len(state(tmp_path)["queue"]) == 10                 # nothing dropped
+
+
+def test_failed_ad_group_creation_gives_its_budget_back_and_is_tried_once_per_cycle(tmp_path):
+    import requests
+    c, client = full_config(tmp_path), FakeClient()
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-25")
+    attempts = []
+
+    def unavailable(campaign_id, name, daily_budget, max_cpc):
+        attempts.append(name)
+        raise requests.HTTPError("503", response=_Status(503))
+    client.create_ad_group = unavailable
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-26")
+    assert len(attempts) == len(set(attempts))                 # once per product, not once per pin
+    ledger = json.loads((tmp_path / "ledger.json").read_text())
+    assert ledger["days"].get("2026-10-26", 0) == 0            # nothing left reserved
+
+
+def test_a_lost_reply_when_posting_drops_the_pin_instead_of_risking_a_duplicate(tmp_path):
+    import requests
+    c, client = full_config(tmp_path), FakeClient()
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-25")
+
+    def lost_reply(pin, image_path):
+        raise requests.ReadTimeout("read timed out")
+    client.create_pin = lost_reply
+    log = run_cycle("home office", PRODUCTS, c, client, today="2026-10-26")
+    assert any("may or may not have posted" in line for line in log)
+    assert len(state(tmp_path)["queue"]) == 9
+
+
+def test_posting_without_a_board_fails_up_front(tmp_path):
+    c, client = full_config(tmp_path, pinterest_board_id=""), FakeClient()
+    with pytest.raises(ValueError, match="PINTEREST_BOARD_ID"):
+        run_cycle("home office", PRODUCTS, c, client, today="2026-10-25")
+
+
+def test_a_refused_resume_releases_the_budget_and_says_why(tmp_path):
+    c, client = full_config(tmp_path), FakeClient()
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-25")
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-26")
+    (tmp_path / "STOP").write_text("")
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-27")
+    (tmp_path / "STOP").unlink()
+
+    def archived(*a, **kw):
+        raise PinterestRefused("campaign is archived")
+    client.set_status = archived
+    log = run_cycle("home office", PRODUCTS, c, client, today="2026-10-28")
+    assert any("refuses to resume the campaign" in line for line in log)
+    ledger = json.loads((tmp_path / "ledger.json").read_text())
+    assert ledger["days"].get("2026-10-28", 0) == 0

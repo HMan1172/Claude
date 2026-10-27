@@ -184,3 +184,21 @@ def test_awin_api_calls_are_paced_for_its_rate_limit(fake_awin, monkeypatch):
     awin.programmes("joined")
     awin.programmes("joined")
     assert waits and waits[-1] > 3
+
+
+def test_products_survive_one_failed_commission_lookup(fake_awin, monkeypatch, tmp_path):
+    feeds = FEED_LIST + "501,Desk Co,US,active,F9005,Desks 2,English,Awin,\n"
+    real = awin.http.request
+    lookups = []
+
+    def request(method, url, **kw):
+        if url.endswith("/feedList"):
+            return Resp(text=feeds)
+        if url.endswith("/programmedetails"):
+            lookups.append(1)
+            if len(lookups) == 1:
+                raise awin.http.requests.Timeout("timed out")
+        return real(method, url, **kw)
+    monkeypatch.setattr(awin.http, "request", request)
+    products = load_products(awin.discover("standing desk", str(tmp_path / "p.csv")))
+    assert len(lookups) == 2 and [p["id"] for p in products] == ["aw1"]   # first feed's product kept

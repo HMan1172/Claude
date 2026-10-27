@@ -77,6 +77,7 @@ def discover(niche: str, out_path: str) -> str:
         timeout=60).text)))
     words = _words(niche)
     matched, others, rates, lookups, scanned, failed = [], [], {}, 0, 0, {}
+    pending = {}  # products from feeds whose commission lookup failed, kept for a later success
     for f in feeds:
         adv = str(f.get("Advertiser ID", ""))
         if f.get("Membership Status") != "active" or f.get("Datafeed Format") == "Google":
@@ -98,10 +99,16 @@ def discover(niche: str, out_path: str) -> str:
                 failed[adv] = failed.get(adv, 0) + 1
                 if failed[adv] >= 2:  # one retry on a later feed, then stop spending lookups on it
                     rates[adv] = None
-        if rates.get(adv):
-            matched += [_row(item, rates[adv]) for item in hits]
-            others += [_row(item, rates[adv]) for item in rest]
-    rows = (matched or others)[:CANDIDATES]
+        if adv not in rates:
+            pending.setdefault(adv, ([], []))
+            pending[adv][0].extend(hits)
+            pending[adv][1].extend(rest)
+            continue
+        earlier_hits, earlier_rest = pending.pop(adv, ([], []))
+        if rates[adv]:
+            matched += [_row(item, rates[adv]) for item in earlier_hits + hits]
+            others += [_row(item, rates[adv]) for item in earlier_rest + rest]
+    rows = list({r["id"]: r for r in (matched or others)}.values())[:CANDIDATES]  # one row per product
     if not rows:
         raise ValueError("Awin returned no usable products from your joined programmes.")
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
