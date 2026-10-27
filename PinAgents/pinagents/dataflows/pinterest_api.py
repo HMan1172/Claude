@@ -8,6 +8,7 @@ returns a fake id, so the autopilot can be tested end to end without touching yo
 import base64
 import json
 import os
+import re
 import time
 
 import requests
@@ -164,6 +165,25 @@ class PinterestClient:
         floors = out.get("bid_floors") or []
         return max(floors) / MICRO if floors else None
 
+    def keyword_volumes(self, keywords: list[str]) -> dict:
+        """How often each keyword is searched on Pinterest in the first targeted country,
+        {keyword: searches}. Empty when unknown (no ad account, dry run, or refused)."""
+        if not self.ads_live or not keywords:
+            return {}
+        try:
+            out = self._request("GET", f"/ad_accounts/{self.ad_account}/keywords/metrics", params={
+                "country_code": self.config["ads_countries"][0], "keywords": keywords[:2000]})
+        except requests.HTTPError as err:
+            if err.response is not None and err.response.status_code in (400, 401, 403, 404):
+                return {}
+            raise
+        volumes = {}
+        for row in out.get("data") or []:
+            v = _volume((row.get("metrics") or {}).get("keyword_query_volume"))
+            if v is not None:
+                volumes[row["keyword"]] = v
+        return volumes
+
     def update_ad_group(self, ad_group_id: str, max_cpc: float) -> None:
         if not self.ads_live or ad_group_id.startswith("dry-"):
             return
@@ -202,3 +222,12 @@ class PinterestClient:
             "campaign_ids": [campaign_id], "start_date": start, "end_date": end,
             "granularity": "DAY", "columns": "SPEND_IN_MICRO_DOLLAR"})
         return {r["DATE"]: (r.get("SPEND_IN_MICRO_DOLLAR") or 0) / MICRO for r in rows}
+
+
+def _volume(text) -> float | None:
+    """Search volume as a number. The API types it as a string, which may be a plain number or a
+    range such as "10K-100K"; a range counts as its lower end."""
+    m = re.match(r"\s*([\d.,]+)\s*([KMB]?)", str(text or ""), re.I)
+    if not m:
+        return None
+    return float(m.group(1).replace(",", "")) * {"": 1, "K": 1e3, "M": 1e6, "B": 1e9}[m.group(2).upper()]

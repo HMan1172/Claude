@@ -182,3 +182,29 @@ def test_products_still_load_if_cj_has_no_imagelink_field(fake_cj, monkeypatch):
         return Resp(body=PRODUCTS)
     monkeypatch.setattr(cj.http, "request", post)
     assert len(cj.program_products({"id": "111"}, [])) == 2
+
+
+def test_niche_skips_categories_nobody_searches_for():
+    programs = [{"category": "Rugs", "epc": 0.45, "commission_rate": 0.12},
+                {"category": "Lamps", "epc": 0.30, "commission_rate": 0.10}]
+    assert cj.pick_niche(programs) == "Rugs"
+    assert cj.pick_niche(programs, lambda cats: {"Rugs": 200, "Lamps": 50000}) == "Lamps"
+    assert cj.pick_niche(programs, lambda cats: {}) == "Rugs"           # unknown demand: EPC decides
+
+
+def test_search_volume_parsing():
+    from pinagents.dataflows.pinterest_api import _volume
+    assert _volume("12,500") == 12500 and _volume("10K-100K") == 10000
+    assert _volume("1.5M") == 1.5e6 and _volume(None) is None and _volume("n/a") is None
+
+
+def test_check_shows_what_cj_returned_when_nothing_is_readable(fake_cj, monkeypatch, capsys):
+    from cli.main import main
+    odd = b"<cj-api><advertisers><advertiser><id>1</id><program-name>X</program-name></advertiser></advertisers></cj-api>"
+    real = cj.http.request
+    monkeypatch.setattr(cj.http, "request", lambda method, url, **kw: Resp(content=odd) if method == "GET"
+                        else real(method, url, **kw))
+    monkeypatch.delenv("PINTEREST_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("PINTEREST_REFRESH_TOKEN", raising=False)
+    assert main(["check"]) == 1
+    assert "first <advertiser> has: ['id', 'program-name']" in capsys.readouterr().out

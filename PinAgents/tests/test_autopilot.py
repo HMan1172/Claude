@@ -42,6 +42,9 @@ class FakeClient:
     def bid_floor(self):
         return None
 
+    def keyword_volumes(self, keywords):
+        return getattr(self, "volumes", {})
+
     def update_ad_group(self, ad_group_id, max_cpc):
         self.calls.append(("bid", ad_group_id, max_cpc))
 
@@ -242,3 +245,21 @@ def test_check_tests_the_ai_provider(monkeypatch, capsys):
     monkeypatch.setattr(llm.LLM, "_call", lambda self, system, user, model: '{"ok": true}')
     assert main(["check", "--provider", "anthropic"]) == 0
     assert "OK    AI provider (quick model claude-haiku-5-5): replied" in capsys.readouterr().out
+
+
+def test_refused_ad_groups_are_retried_after_a_cool_off_up_to_three_tries(tmp_path):
+    c, client = full_config(tmp_path, ads_daily_cap=50.0), FakeClient()
+    tries = []
+
+    def refuse(campaign_id, name, daily_budget, max_cpc):
+        tries.append(name)
+        raise ValueError("account under review")
+    client.create_ad_group = refuse
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-25")
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-26")   # first tries
+    run_cycle("home office", PRODUCTS, c, client, today="2026-11-01")   # newly posted products only
+    assert max(tries.count(name) for name in tries) == 1                 # no retry while cooling off
+    for day in ["2026-11-09", "2026-11-23", "2026-12-07", "2026-12-21"]:
+        run_cycle("home office", PRODUCTS, c, client, today=day)
+    per_product = {name: tries.count(name) for name in tries}
+    assert set(per_product.values()) == {3}                              # gave up after 3 tries

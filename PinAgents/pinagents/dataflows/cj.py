@@ -25,6 +25,9 @@ PRODUCTS = "https://ads.api.cj.com/query"
 COMMISSIONS = "https://commissions.api.cj.com/query"
 PRODUCTS_PER_PROGRAM = 25
 CANDIDATES = 40  # products handed to the Product Scout
+# A niche needs people searching for it on Pinterest; categories below this are passed over when
+# Pinterest reports search volume. An assumption: Pinterest doesn't state the volume's period.
+MIN_SEARCH_VOLUME = 1000
 
 
 def configured() -> bool:
@@ -104,6 +107,18 @@ def joined_programs() -> list[dict]:
         page += 1
 
 
+def lookup_sample() -> str:
+    """What CJ's program lookup actually returned, for when no program could be read from it."""
+    resp = http.request("GET", LOOKUP, headers=_headers(), timeout=60, params={
+        "requestor-cid": os.environ["CJ_COMPANY_ID"], "advertiser-ids": "joined",
+        "records-per-page": 1, "page-number": 1})
+    root = ET.fromstring(resp.content)
+    found = root.findall(".//advertiser")
+    if not found:
+        return f"no <advertiser> elements; top-level tags: {[c.tag for c in root]}"
+    return f"first <advertiser> has: {sorted({e.tag for e in found[0].iter()} - {'advertiser'})}"
+
+
 def program_products(program: dict, keywords: list[str], photos: bool = True) -> list[dict]:
     keyword_arg = f"keywords: {json.dumps(keywords)}, " if keywords else ""
     query = f"""{{ shoppingProducts(companyId: "{os.environ['CJ_COMPANY_ID']}",
@@ -119,25 +134,30 @@ def program_products(program: dict, keywords: list[str], photos: bool = True) ->
         raise
 
 
-def pick_niche(programs: list[dict]) -> str:
-    """The category whose joined programs earn the most per click, counting commission when EPC is missing."""
+def pick_niche(programs: list[dict], demand=None) -> str:
+    """The category whose joined programs earn the most per click (counting commission when EPC is
+    missing), among those people actually search for on Pinterest when demand can be measured.
+
+    demand: callable taking category names and returning {name: Pinterest search volume}."""
     scores = {}
     for p in programs:
         if p["category"]:
             scores[p["category"]] = max(scores.get(p["category"], 0), p["epc"] or p["commission_rate"] / 100)
     if not scores:
         raise ValueError("None of your joined CJ programs lists a category; give --niche.")
-    return max(scores, key=scores.get)
+    volumes = demand(list(scores)) if demand else {}
+    searched = {c: s for c, s in scores.items() if volumes.get(c, 0) >= MIN_SEARCH_VOLUME}
+    return max(searched or scores, key=(searched or scores).get)
 
 
-def discover(niche: str | None, out_path: str) -> tuple[str, str]:
+def discover(niche: str | None, out_path: str, demand=None) -> tuple[str, str]:
     """Write a products CSV from joined CJ programs, best earners per click first.
 
     With no niche, picks one (pick_niche) and takes products from that category's programs."""
     programs = sorted(joined_programs(), key=lambda p: -(p["epc"] or 0))
     keywords = niche.split() if niche else []
     if not niche:
-        niche = pick_niche(programs)
+        niche = pick_niche(programs, demand)
         programs = [p for p in programs if p["category"] == niche]
     rows = []
     for program in programs:

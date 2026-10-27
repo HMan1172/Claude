@@ -139,6 +139,9 @@ def cmd_check(args):
 
         def programs():
             found["programs"] = cj.joined_programs()
+            if not found["programs"]:  # nothing readable: show what CJ sent so the parser can be fixed
+                raise ValueError(f"no joined program with a percentage sale commission could be read; "
+                                 f"CJ's lookup returned {cj.lookup_sample()}")
             p = found["programs"][:1]
             return f"{len(found['programs'])} joined with a sale commission" + (
                 f"; e.g. {p[0]['name']}: {p[0]['commission_rate']:.0%}, EPC {p[0]['epc']}" if p else "")

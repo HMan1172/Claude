@@ -111,7 +111,8 @@ Each cycle:
 2. When no pins are waiting, the agents write a new batch (using lessons from earlier results).
    Without `--products`, it first searches every CJ Affiliate program you've joined for products
    matching the niche, best earnings per click first, and passes the top 40 to the Product Scout.
-   Without `--niche`, it picks the category of your best-earning joined programs and keeps it.
+   Without `--niche`, it picks the category of your best-earning joined programs that people
+   actually search for on Pinterest (when Pinterest's keyword metrics are available) and keeps it.
 3. Posts the pins that are due, at most `pins_per_day`.
 4. Runs ads, all in plain code:
    - One traffic campaign with Pinterest's own lifetime spend cap set to `ads_total_cap`.

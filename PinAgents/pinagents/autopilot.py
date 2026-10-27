@@ -41,6 +41,10 @@ BID_MARGIN = 0.6
 # simulation, judging products on spend this old beat judging on today's spend on a held-out seed.
 ATTRIBUTION_DAYS = 4
 EMPTY_BATCH_WAIT_DAYS = 3  # after a batch where every pin failed compliance
+# Pinterest refusals can be temporary (account review, budget rules that change), so a refused
+# ad group or ad is tried again after this many days, up to REFUSED_MAX_TRIES times in all.
+REFUSED_RETRY_DAYS = 14
+REFUSED_MAX_TRIES = 3
 
 
 def _empty_state() -> dict:
@@ -88,7 +92,8 @@ def run_cycle(niche: str | None, products_csv: str | None, config: dict, client=
             log.append(f"Last batch had no pins pass compliance; next try after {EMPTY_BATCH_WAIT_DAYS} days.")
         elif not st["queue"]:
             if not products_csv:
-                products_csv, niche = cj.discover(niche, os.path.join(config["results_dir"], f"cj_products_{today}.csv"))
+                products_csv, niche = cj.discover(niche, os.path.join(config["results_dir"], f"cj_products_{today}.csv"),
+                                                  demand=client.keyword_volumes)
                 log.append(f"Found products on CJ for '{niche}' ({products_csv}).")
             _generate(st, niche, products_csv, config, today, log)
             st["empty_batch"] = None if st["queue"] else today
@@ -218,6 +223,11 @@ def _verdict(spend: float, clicks: float, earned, config) -> str:
     return ""
 
 
+def _retry_due(refusal: dict, today: str) -> bool:
+    return (refusal.get("tries", 1) < REFUSED_MAX_TRIES
+            and refusal.get("date", "") <= _days_ago(today, REFUSED_RETRY_DAYS))
+
+
 def _is_amazon(domain: str) -> bool:
     """Amazon links: since the April 14, 2026 Associates agreement, ad-referred sales earn nothing."""
     return any(part == "amazon" for part in domain.lower().split(".")) or domain.lower().endswith("amzn.to")
@@ -279,9 +289,12 @@ def _run_ads(st, client, guard, config, today, log, save=lambda: None) -> dict:
     budget = config["ad_group_daily_budget"]
     refused = st.setdefault("refused", {})
     for key, p in st["posted"].items():
-        if key in st["ads"] or key in refused:
+        if key in st["ads"] or (key in refused and not _retry_due(refused[key], today)):
             continue
         pid = p["product_id"]
+        group = st["groups"].get(pid, {})
+        if group.get("status") == "REFUSED" and _retry_due(group, today):
+            del st["groups"][pid]  # try the ad group again; its try count carries over below
         if pid not in st["groups"] and _is_amazon(st["products"].get(pid, {}).get("domain", "")):
             st["groups"][pid] = {"status": "SKIPPED", "reason": "Amazon pays no commission on sales from paid ads"}
             log.append(f"Not advertising {pid}: {st['groups'][pid]['reason']}.")
@@ -306,7 +319,8 @@ def _run_ads(st, client, guard, config, today, log, save=lambda: None) -> dict:
             try:
                 group_id = client.create_ad_group(cid, f"PinAgents {pid}", budget, bid)
             except (ValueError, requests.HTTPError) as err:  # one refused product mustn't stop the rest
-                st["groups"][pid] = {"status": "REFUSED", "reason": f"Pinterest refused the ad group: {err}"}
+                st["groups"][pid] = {"status": "REFUSED", "reason": f"Pinterest refused the ad group: {err}",
+                                     "date": today, "tries": group.get("tries", 0) + 1}
                 log.append(f"Not advertising {pid}: {st['groups'][pid]['reason']}")
                 save()
                 continue
@@ -318,8 +332,10 @@ def _run_ads(st, client, guard, config, today, log, save=lambda: None) -> dict:
             try:
                 st["ads"][key] = client.create_ad(st["groups"][pid]["id"], p["pin_id"], key,
                                                   destination_url=_ad_link(p["link"], pid))
+                refused.pop(key, None)
             except (ValueError, requests.HTTPError) as err:  # e.g. the pin fails Pinterest's ad review
-                refused[key] = str(err)
+                refused[key] = {"reason": str(err), "date": today,
+                                "tries": refused.get(key, {}).get("tries", 0) + 1}
                 log.append(f"Pinterest refused an ad for pin {key}: {err}")
             save()
     return stats
