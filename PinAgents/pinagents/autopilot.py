@@ -176,15 +176,20 @@ def _load_earnings(path: str, since: str) -> dict:
 
 def _sales_delay(path: str) -> int:
     """Days within which 90% of sales reach the report, from the earnings file's click dates
-    (kept between 1 and 14); ATTRIBUTION_DAYS until there are enough sales to measure."""
-    lags = []
+    (kept between 1 and 14): ad sales alone once there are enough, since ad buyers may buy sooner
+    or later than free-pin buyers; all sales before that; ATTRIBUTION_DAYS until either suffices."""
+    every, from_ads = [], []
     if path and os.path.exists(path):
         with open(path, newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
                 try:
-                    lags.append((date.fromisoformat(row["date"]) - date.fromisoformat(row["click_date"])).days)
+                    lag = (date.fromisoformat(row["date"]) - date.fromisoformat(row["click_date"])).days
                 except (KeyError, TypeError, ValueError):
                     continue
+                every.append(lag)
+                if row.get("product_id", "").endswith("-ad"):
+                    from_ads.append(lag)
+    lags = from_ads if len(from_ads) >= MIN_SALES_TO_MEASURE_DELAY else every
     if len(lags) < MIN_SALES_TO_MEASURE_DELAY:
         return ATTRIBUTION_DAYS
     lags.sort()

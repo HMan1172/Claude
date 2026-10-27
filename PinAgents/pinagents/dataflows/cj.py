@@ -25,9 +25,10 @@ PRODUCTS = "https://ads.api.cj.com/query"
 COMMISSIONS = "https://commissions.api.cj.com/query"
 PRODUCTS_PER_PROGRAM = 25
 CANDIDATES = 40  # products handed to the Product Scout
-# A niche needs people searching for it on Pinterest; categories below this are passed over when
-# Pinterest reports search volume. An assumption: Pinterest doesn't state the volume's period.
-MIN_SEARCH_VOLUME = 1000
+# A niche needs people searching for it on Pinterest. When Pinterest reports search volume,
+# categories searched less than this share as often as the most-searched one are passed over.
+# Relative, because Pinterest doesn't say what period or unit its volume figure uses.
+MIN_SHARE_OF_TOP_SEARCHES = 0.1
 
 
 def configured() -> bool:
@@ -146,7 +147,8 @@ def pick_niche(programs: list[dict], demand=None) -> str:
     if not scores:
         raise ValueError("None of your joined CJ programs lists a category; give --niche.")
     volumes = demand(list(scores)) if demand else {}
-    searched = {c: s for c, s in scores.items() if volumes.get(c, 0) >= MIN_SEARCH_VOLUME}
+    top = max(volumes.values(), default=0)
+    searched = {c: s for c, s in scores.items() if top and volumes.get(c, 0) >= MIN_SHARE_OF_TOP_SEARCHES * top}
     return max(searched or scores, key=(searched or scores).get)
 
 

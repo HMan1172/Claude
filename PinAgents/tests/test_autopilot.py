@@ -300,3 +300,14 @@ def test_sales_delay_is_measured_once_there_are_enough_sales(tmp_path):
     assert _sales_delay(str(path)) == 4                       # 5 sales: too few, default
     path.write_text("\n".join(rows))
     assert _sales_delay(str(path)) == 6                       # 90% of 10 sales posted within 6 days
+
+
+def test_sales_delay_prefers_ad_sales_once_there_are_enough(tmp_path):
+    from pinagents.autopilot import _sales_delay
+    path = tmp_path / "earnings.csv"
+    organic = [f"a,2026-10-20,5,2026-10-10" for _ in range(10)]          # 10-day lag
+    ads = [f"a-ad,2026-10-12,5,2026-10-10" for _ in range(10)]           # 2-day lag
+    path.write_text("\n".join(["product_id,date,earnings,click_date"] + organic + ads[:5]))
+    assert _sales_delay(str(path)) == 10                     # only 5 ad sales: use all sales
+    path.write_text("\n".join(["product_id,date,earnings,click_date"] + organic + ads))
+    assert _sales_delay(str(path)) == 2                      # 10 ad sales: ads alone

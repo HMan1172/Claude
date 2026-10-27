@@ -189,6 +189,7 @@ def test_niche_skips_categories_nobody_searches_for():
                 {"category": "Lamps", "epc": 0.30, "commission_rate": 0.10}]
     assert cj.pick_niche(programs) == "Rugs"
     assert cj.pick_niche(programs, lambda cats: {"Rugs": 200, "Lamps": 50000}) == "Lamps"
+    assert cj.pick_niche(programs, lambda cats: {"Rugs": 8000, "Lamps": 50000}) == "Rugs"  # within 10% of top
     assert cj.pick_niche(programs, lambda cats: {}) == "Rugs"           # unknown demand: EPC decides
 
 
