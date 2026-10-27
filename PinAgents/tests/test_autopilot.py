@@ -39,6 +39,9 @@ class FakeClient:
         self.calls.append(("ad", ad_group_id, pin_id, destination_url))
         return self._id("ad")
 
+    def bid_floor(self):
+        return None
+
     def update_ad_group(self, ad_group_id, max_cpc):
         self.calls.append(("bid", ad_group_id, max_cpc))
 

@@ -12,6 +12,8 @@ import time
 
 import requests
 
+from . import http
+
 API = "https://api.pinterest.com/v5"
 MICRO = 1_000_000
 
@@ -46,9 +48,9 @@ class PinterestClient:
                 refresh = json.load(f).get("refresh_token") or refresh
         if not (app_id and secret and refresh):
             return False
-        resp = requests.post(f"{API}/oauth/token", timeout=30, auth=(app_id, secret),
-                             data={"grant_type": "refresh_token", "refresh_token": refresh})
-        resp.raise_for_status()
+        # Not retried after a server error: Pinterest may already have rotated the refresh token.
+        resp = http.request("POST", f"{API}/oauth/token", idempotent=False, timeout=30, auth=(app_id, secret),
+                            data={"grant_type": "refresh_token", "refresh_token": refresh})
         body = resp.json()
         self.token = body["access_token"]
         if body.get("refresh_token"):
@@ -58,11 +60,9 @@ class PinterestClient:
                 json.dump({"refresh_token": body["refresh_token"], "saved_at": int(time.time())}, f)
         return True
 
-    def _request(self, method: str, path: str, **kw):
-        resp = requests.request(method, f"{API}{path}", timeout=30,
-                                headers={"Authorization": f"Bearer {self.token}"}, **kw)
-        resp.raise_for_status()
-        return resp.json()
+    def _request(self, method: str, path: str, idempotent: bool = True, **kw):
+        return http.request(method, f"{API}{path}", idempotent=idempotent, timeout=30,
+                            headers={"Authorization": f"Bearer {self.token}"}, **kw).json()
 
     def _dry_id(self, kind: str) -> str:
         self._dry_ids += 1
@@ -86,13 +86,13 @@ class PinterestClient:
                     "would_post": {k: v for k, v in body.items() if k != "media_source"}}
         if not board_id:
             raise ValueError("Set PINTEREST_BOARD_ID before posting.")
-        return self._request("POST", "/pins", json=body)
+        return self._request("POST", "/pins", idempotent=False, json=body)
 
     # ---- ads ------------------------------------------------------------
     def _batch_create(self, kind: str, item: dict) -> str:
         if not self.ads_live:
             return self._dry_id(kind.rstrip("s"))
-        out = self._request("POST", f"/ad_accounts/{self.ad_account}/{kind}", json=[item])
+        out = self._request("POST", f"/ad_accounts/{self.ad_account}/{kind}", idempotent=False, json=[item])
         result = out["items"][0]
         if result.get("exceptions"):
             raise ValueError(f"Pinterest refused the {kind[:-1]}: {result['exceptions']}")
@@ -149,6 +149,21 @@ class PinterestClient:
         est["weekly_click"] = m.get("weekly_click")
         return est
 
+    def bid_floor(self) -> float | None:
+        """Pinterest's minimum cost-per-click bid for our targeting, in dollars (None if unknown)."""
+        if not self.ads_live:
+            return None
+        try:
+            out = self._request("POST", f"/ad_accounts/{self.ad_account}/bid_floor", json={"bid_floor_specs": [{
+                "billable_event": "CLICKTHROUGH", "currency": "USD", "objective_type": "CONSIDERATION",
+                "countries": self.config["ads_countries"]}]})
+        except requests.HTTPError as err:
+            if err.response is not None and err.response.status_code in (400, 401, 403, 404):
+                return None
+            raise
+        floors = out.get("bid_floors") or []
+        return max(floors) / MICRO if floors else None
+
     def update_ad_group(self, ad_group_id: str, max_cpc: float) -> None:
         if not self.ads_live or ad_group_id.startswith("dry-"):
             return
@@ -170,7 +185,7 @@ class PinterestClient:
         stats = {}
         for i in range(0, len(ids), 250):
             rows = self._request("GET", f"/ad_accounts/{self.ad_account}/ads/analytics", params={
-                "ad_ids": ",".join(ids[i:i + 250]), "start_date": start, "end_date": end,
+                "ad_ids": ids[i:i + 250], "start_date": start, "end_date": end,
                 "granularity": "TOTAL",
                 "columns": "SPEND_IN_MICRO_DOLLAR,TOTAL_CLICKTHROUGH,PAID_IMPRESSION"})
             for r in rows:
@@ -184,6 +199,6 @@ class PinterestClient:
         if campaign_id.startswith("dry-") or not self.ads_live:
             return {}
         rows = self._request("GET", f"/ad_accounts/{self.ad_account}/campaigns/analytics", params={
-            "campaign_ids": campaign_id, "start_date": start, "end_date": end,
+            "campaign_ids": [campaign_id], "start_date": start, "end_date": end,
             "granularity": "DAY", "columns": "SPEND_IN_MICRO_DOLLAR"})
         return {r["DATE"]: (r.get("SPEND_IN_MICRO_DOLLAR") or 0) / MICRO for r in rows}

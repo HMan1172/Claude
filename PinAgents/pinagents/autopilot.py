@@ -152,7 +152,7 @@ def _load_earnings(path: str, since: str) -> dict:
     return totals
 
 
-def _calibrate_bids(st, client, by_product, earnings, config) -> None:
+def _calibrate_bids(st, client, by_product, earnings, config, min_bid: float) -> None:
     """Lower every bid by the pooled ratio of ad earnings to what network EPC predicted (never raise)."""
     expected = earned = 0.0
     commissions = []
@@ -169,7 +169,7 @@ def _calibrate_bids(st, client, by_product, earnings, config) -> None:
         if g["status"] != "ACTIVE":
             continue
         # Stopping a product stays with _verdict; calibration only moves bids, never below the minimum.
-        bid = max(config["ads_min_bid"],
+        bid = max(min_bid,
                   round(max_cpc(_base_epc(st["products"].get(pid, {}), config) * st["epc_factor"], BID_MARGIN), 2))
         if bid != g["bid"]:
             client.update_ad_group(g["id"], max_cpc=bid)
@@ -244,7 +244,9 @@ def _run_ads(st, client, guard, config, today, log) -> dict:
             g.update(status="PAUSED", reason=why)
             log.append(f"Paused ads for {pid}: {why}.")
 
-    _calibrate_bids(st, client, by_product, earnings, config)
+    # Pinterest's real minimum bid for our targeting; the configured one when it won't say.
+    min_bid = client.bid_floor() or config["ads_min_bid"]
+    _calibrate_bids(st, client, by_product, earnings, config, min_bid)
 
     # 3. Authorize today's budget for ad groups already running.
     active = [g for g in st["groups"].values() if g["status"] == "ACTIVE"]
@@ -270,9 +272,9 @@ def _run_ads(st, client, guard, config, today, log) -> dict:
         if pid not in st["groups"]:
             epc = _base_epc(st["products"].get(pid, {}), config) * st.get("epc_factor", 1.0)
             bid = round(max_cpc(epc, BID_MARGIN), 2)
-            if bid < config["ads_min_bid"]:
+            if bid < min_bid:
                 st["groups"][pid] = {"status": "SKIPPED",
-                                     "reason": f"can only afford ${bid:.2f} per click, minimum is ${config['ads_min_bid']:.2f}"}
+                                     "reason": f"can only afford ${bid:.2f} per click, minimum is ${min_bid:.2f}"}
                 log.append(f"Not advertising {pid}: {st['groups'][pid]['reason']}.")
                 continue
             try:

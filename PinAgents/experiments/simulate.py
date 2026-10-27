@@ -69,6 +69,9 @@ class SimMarket:
         self.groups[gid] = {"pid": name.split()[-1], "budget": daily_budget, "bid": max_cpc, "active": True}
         return gid
 
+    def bid_floor(self):
+        return None
+
     def update_ad_group(self, ad_group_id, max_cpc=None):
         self.groups[ad_group_id]["bid"] = max_cpc
 

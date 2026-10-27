@@ -54,9 +54,8 @@ def fake_cj(monkeypatch):
     monkeypatch.setenv("CJ_API_TOKEN", "t")
     monkeypatch.setenv("CJ_COMPANY_ID", "c")
     monkeypatch.setenv("CJ_WEBSITE_ID", "w")
-    monkeypatch.setattr(cj.requests, "get", lambda url, **kw: Resp(content=LOOKUP_XML))
-    monkeypatch.setattr(cj.requests, "post", lambda url, **kw: Resp(
-        body=COMMISSIONS if url == cj.COMMISSIONS else PRODUCTS))
+    monkeypatch.setattr(cj.http, "request", lambda method, url, **kw: Resp(content=LOOKUP_XML) if method == "GET"
+                        else Resp(body=COMMISSIONS if url == cj.COMMISSIONS else PRODUCTS))
 
 
 def test_joined_programs_reads_sale_commission_and_epc(fake_cj):
@@ -127,8 +126,9 @@ def test_bids_drop_when_ads_earn_less_than_network_epc(fake_cj, tmp_path):
 
 def test_autopilot_picks_its_own_niche(fake_cj, tmp_path, monkeypatch):
     queries = []
-    real_post = cj.requests.post
-    monkeypatch.setattr(cj.requests, "post", lambda url, **kw: queries.append(kw["json"]["query"]) or real_post(url, **kw))
+    real = cj.http.request
+    monkeypatch.setattr(cj.http, "request", lambda method, url, **kw: (
+        queries.append(kw["json"]["query"]) if method == "POST" else None) or real(method, url, **kw))
     c, client = full_config(tmp_path, earnings_csv=""), FakeClient()
     c["cj_earnings_path"] = str(tmp_path / "cj_earnings.csv")
     log = run_cycle(None, None, c, client, today="2026-10-25")
@@ -149,12 +149,12 @@ def test_check_command_reports_each_service(fake_cj, monkeypatch, capsys):
 
 
 def test_rejected_field_names_come_back_with_the_real_ones(fake_cj, monkeypatch):
-    def post(url, json, **kw):
+    def post(method, url, json, **kw):
         if "__type" in json["query"]:
             return Resp(body={"data": {"__type": {"fields": [{"name": "clickURL", "args": []},
                                                              {"name": "imageURL", "args": []}]}}})
         return Resp(body={"errors": [{"message": 'Cannot query field "clickUrl" on type "LinkCode".'}]})
-    monkeypatch.setattr(cj.requests, "post", post)
+    monkeypatch.setattr(cj.http, "request", post)
     with pytest.raises(ValueError, match="LinkCode has: clickURL, imageURL"):
         cj.program_products({"id": "111"}, [])
 

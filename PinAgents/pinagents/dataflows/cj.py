@@ -18,7 +18,7 @@ import re
 import xml.etree.ElementTree as ET
 from datetime import date, timedelta
 
-import requests
+from . import http
 
 LOOKUP = "https://advertiser-lookup.api.cj.com/v2/advertiser-lookup"
 PRODUCTS = "https://ads.api.cj.com/query"
@@ -36,9 +36,7 @@ def _headers() -> dict:
 
 
 def _graphql(url: str, query: str, explain: bool = True) -> dict:
-    resp = requests.post(url, json={"query": query}, headers=_headers(), timeout=60)
-    resp.raise_for_status()
-    body = resp.json()
+    body = http.request("POST", url, json={"query": query}, headers=_headers(), timeout=60).json()
     if body.get("errors"):
         messages = "; ".join(str(e.get("message", e)) for e in body["errors"])
         raise ValueError(f"CJ API error: {messages}" + (_schema_hint(url, messages) if explain else ""))
@@ -88,10 +86,9 @@ def _epc(text) -> float | None:
 def joined_programs() -> list[dict]:
     programs, page = [], 1
     while True:
-        resp = requests.get(LOOKUP, headers=_headers(), timeout=60, params={
+        resp = http.request("GET", LOOKUP, headers=_headers(), timeout=60, params={
             "requestor-cid": os.environ["CJ_COMPANY_ID"], "advertiser-ids": "joined",
             "records-per-page": 100, "page-number": page})
-        resp.raise_for_status()
         found = ET.fromstring(resp.content).findall(".//advertiser")
         for a in found:
             rate = _sale_commission(a)
