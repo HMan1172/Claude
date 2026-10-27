@@ -4,7 +4,7 @@ import os
 import pytest
 
 from pinagents.autopilot import run_cycle
-from pinagents.dataflows.pinterest_api import PinterestClient
+from pinagents.dataflows.pinterest_api import PinterestClient, PinterestRefused
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 PRODUCTS = os.path.join(ROOT, "products_example.csv")
@@ -237,7 +237,7 @@ def test_a_refused_ad_group_does_not_stop_other_products(tmp_path):
     def create_ad_group(campaign_id, name, daily_budget, max_cpc):
         if len([x for x in client.calls if x[0] == "group"]) == 0:
             client.calls.append(("group", name, daily_budget, max_cpc))
-            raise ValueError("Pinterest refused the ad_group: budget below minimum")
+            raise PinterestRefused("Pinterest refused the ad_group: budget below minimum")
         return real(campaign_id, name, daily_budget, max_cpc)
     client.create_ad_group = create_ad_group
     run_cycle("home office", PRODUCTS, c, client, today="2026-10-25")
@@ -264,7 +264,7 @@ def test_refused_ad_groups_are_retried_after_a_cool_off_up_to_three_tries(tmp_pa
 
     def refuse(campaign_id, name, daily_budget, max_cpc):
         tries.append(name)
-        raise ValueError("account under review")
+        raise PinterestRefused("account under review")
     client.create_ad_group = refuse
     run_cycle("home office", PRODUCTS, c, client, today="2026-10-25")
     run_cycle("home office", PRODUCTS, c, client, today="2026-10-26")   # first tries
@@ -353,7 +353,7 @@ def test_refused_setting_changes_are_logged_not_fatal(tmp_path):
     run_cycle("home office", PRODUCTS, c, client, today="2026-10-26")
 
     def refuse(*a, **kw):
-        raise ValueError("below what's already spent")
+        raise PinterestRefused("below what's already spent")
     client.update_campaign_cap = refuse
     c.update(ads_total_cap=1.0)
     log = run_cycle("home office", PRODUCTS, c, client, today="2026-10-27")
@@ -370,13 +370,14 @@ def test_a_refused_budget_cut_pauses_that_product_to_stay_within_the_cap(tmp_pat
 
     def refuse_first(ad_group_id, max_cpc=None, daily_budget=None):
         if daily_budget is not None and ad_group_id == first_id:
-            raise ValueError("below Pinterest's minimum daily budget")
+            raise PinterestRefused("below Pinterest's minimum daily budget")
         return real(ad_group_id, max_cpc=max_cpc, daily_budget=daily_budget)
     client.update_ad_group = refuse_first
     c.update(ads_daily_cap=6.0)                               # forces a cut for every product
     run_cycle("home office", PRODUCTS, c, client, today="2026-10-27")
     st = state(tmp_path)
-    assert st["groups"][first]["status"] == "PAUSED"
+    paused = [g for g in st["groups"].values() if g["status"] == "PAUSED"]
+    assert paused and "lowest-value" in paused[0]["reason"]
     active = [g for g in st["groups"].values() if g["status"] == "ACTIVE"]
     assert sum(g["budget"] for g in active) <= 6.0 and st["campaign"]["status"] == "ACTIVE"
 
@@ -398,7 +399,7 @@ def test_refused_budget_cuts_pause_only_as_many_products_as_needed(tmp_path):
 
     def minimum_five(ad_group_id, max_cpc=None, daily_budget=None):
         if daily_budget is not None and daily_budget < 5:
-            raise ValueError("below Pinterest's $5 minimum daily budget")
+            raise PinterestRefused("below Pinterest's $5 minimum daily budget")
         return real(ad_group_id, max_cpc=max_cpc, daily_budget=daily_budget)
     client.update_ad_group = minimum_five
     before = [g for g in state(tmp_path)["groups"].values() if g["status"] == "ACTIVE"]
@@ -421,3 +422,68 @@ def test_a_failed_kill_switch_pause_is_logged_not_fatal(tmp_path):
     (tmp_path / "STOP").write_text("")
     log = run_cycle("home office", PRODUCTS, c, client, today="2026-10-27")
     assert any("campaign is still running" in line for line in log)
+
+
+def test_a_network_blip_during_a_budget_cut_pauses_nothing(tmp_path):
+    import requests
+    c, client = full_config(tmp_path, ads_daily_cap=50.0, ad_group_daily_budget=10.0), FakeClient()
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-25")
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-26")
+
+    def timeout(*a, **kw):
+        raise requests.Timeout("read timed out")
+    client.update_ad_group = timeout
+    c.update(ads_daily_cap=6.0)
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-27")
+    assert not [g for g in state(tmp_path)["groups"].values() if g["status"] == "PAUSED"]
+
+
+def test_refused_pins_are_retried_then_dropped_and_outages_just_wait(tmp_path):
+    import requests
+    c, client = full_config(tmp_path), FakeClient()
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-25")
+
+    def down(pin, image_path):
+        raise requests.ConnectionError("unreachable")
+    client.create_pin = down
+    log = run_cycle("home office", PRODUCTS, c, client, today="2026-10-26")
+    assert any("couldn't take pins today" in line for line in log)
+    assert len(state(tmp_path)["queue"]) == 10
+
+    class Refusal:
+        status_code = 400
+
+    def refuse(pin, image_path):
+        raise requests.HTTPError("400 Bad Request", response=Refusal())
+    client.create_pin = refuse
+    for day in ["2026-10-27", "2026-10-28", "2026-10-29"]:
+        log = run_cycle("home office", PRODUCTS, c, client, today=day)
+    assert any("Dropped pin" in line and "3 times" in line for line in log)
+
+
+def test_no_new_ads_under_a_campaign_that_could_not_be_resumed(tmp_path):
+    import requests
+    c, client = full_config(tmp_path), FakeClient()
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-25")
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-26")
+    (tmp_path / "STOP").write_text("")
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-27")
+    (tmp_path / "STOP").unlink()
+
+    def down(*a, **kw):
+        raise requests.ConnectionError("unreachable")
+    client.set_status = down
+    groups_before = len([x for x in client.calls if x[0] == "group"])
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-28")
+    assert len([x for x in client.calls if x[0] == "group"]) == groups_before
+
+
+def test_a_plain_value_error_from_the_client_is_a_bug_and_surfaces(tmp_path):
+    c, client = full_config(tmp_path), FakeClient()
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-25")
+
+    def bug(*a, **kw):
+        raise ValueError("invalid literal for int()")
+    client.create_ad_group = bug
+    with pytest.raises(ValueError, match="invalid literal"):
+        run_cycle("home office", PRODUCTS, c, client, today="2026-10-26")

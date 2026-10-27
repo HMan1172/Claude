@@ -76,7 +76,7 @@ def discover(niche: str, out_path: str) -> str:
         "GET", FEED_LIST.format(pub=os.environ["AWIN_PUBLISHER_ID"], key=os.environ["AWIN_FEED_KEY"]),
         timeout=60).text)))
     words = _words(niche)
-    matched, others, rates, lookups, scanned = [], [], {}, 0, 0
+    matched, others, rates, lookups, scanned, failed = [], [], {}, 0, 0, {}
     for f in feeds:
         adv = str(f.get("Advertiser ID", ""))
         if f.get("Membership Status") != "active" or f.get("Datafeed Format") == "Google":
@@ -95,7 +95,9 @@ def discover(niche: str, out_path: str) -> str:
             try:
                 rates[adv] = commission_rate(adv)
             except NETWORK_ERRORS:
-                rates[adv] = None  # remembered, so its other feeds don't repeat the failed lookup
+                failed[adv] = failed.get(adv, 0) + 1
+                if failed[adv] >= 2:  # one retry on a later feed, then stop spending lookups on it
+                    rates[adv] = None
         if rates.get(adv):
             matched += [_row(item, rates[adv]) for item in hits]
             others += [_row(item, rates[adv]) for item in rest]

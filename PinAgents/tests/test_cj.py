@@ -364,4 +364,6 @@ def test_repeated_earnings_failures_raise_attention_and_pause_failures_are_logge
     logs = [run_cycle("Rugs", None, c, client, today=f"2026-10-{d}") for d in (27, 27, 28, 29)]
     assert any("campaign is still running" in line for line in logs[0])
     assert not any("likely not an outage" in line for line in logs[1] + logs[2])   # counts days, not cycles
-    assert any("failed since 2026-10-27" in line and "are still running" in line for line in logs[3])
+    alert = [line for line in logs[3] if "failed since 2026-10-27" in line]
+    assert alert and "stay paused" not in alert[0]                 # the pause didn't go through
+    assert sum("ATTENTION" in line for line in logs[3]) == 2      # still-running warning + the alert

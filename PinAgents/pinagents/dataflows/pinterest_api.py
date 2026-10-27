@@ -22,6 +22,10 @@ TREND_REGIONS = ["US", "CA", "DE", "FR", "ES", "IT", "AR", "BR", "CO", "MX", "DE
                  "IT+ES+PT+GR+MT", "PL+RO+HU+SK+CZ", "SE+DK+FI+NO", "NL+BE+LU", "AU+NZ"]
 
 
+class PinterestRefused(ValueError):
+    """Pinterest answered but refused the change (reported per item inside a 200 response)."""
+
+
 class PinterestClient:
     def __init__(self, config: dict):
         self.config = config
@@ -98,7 +102,7 @@ class PinterestClient:
         out = self._request("PATCH", f"/ad_accounts/{self.ad_account}/{kind}", json=changes)
         refused = [i["exceptions"] for i in (out or {}).get("items", []) if i.get("exceptions")]
         if refused:
-            raise ValueError(f"Pinterest refused the {kind[:-1]} change: {refused}")
+            raise PinterestRefused(f"Pinterest refused the {kind[:-1]} change: {refused}")
 
     def _batch_create(self, kind: str, item: dict) -> str:
         if not self.ads_live:
@@ -106,7 +110,7 @@ class PinterestClient:
         out = self._request("POST", f"/ad_accounts/{self.ad_account}/{kind}", idempotent=False, json=[item])
         result = out["items"][0]
         if result.get("exceptions"):
-            raise ValueError(f"Pinterest refused the {kind[:-1]}: {result['exceptions']}")
+            raise PinterestRefused(f"Pinterest refused the {kind[:-1]}: {result['exceptions']}")
         return result["data"]["id"]
 
     def create_campaign(self, name: str, lifetime_cap: float) -> str:
