@@ -137,6 +137,8 @@ Each cycle:
    - If Pinterest refuses a product's ads, the reason is logged, other products carry on, and it
      is retried after 14 days (3 tries in all).
    - Raising `ads_total_cap` or the per-product budget updates what's already running on Pinterest.
+   - If a network's earnings report can't be fetched, the campaign pauses for that day (no
+     product spends without being judged) and resumes once the report is back.
    - `~/.pinagents/STOP` pauses the campaign on the next cycle.
    - Every Pinterest create is saved to the state file at once (written atomically), so a crash
      can't make the next cycle post or create anything twice.
@@ -157,7 +159,8 @@ apply to; anything that accepts you is used from the next batch.
 **Awin**, with or instead of CJ: set `AWIN_API_TOKEN`, `AWIN_PUBLISHER_ID` and `AWIN_FEED_KEY`
 (the hex after `/apikey/` in any Create-a-Feed download URL). Products come from your joined
 programmes' feeds (in-stock, USD, name matching the niche), links carry `clickref=<id>`, earnings
-come from Awin's transactions (declined ones excluded), and the join list gets an Awin section.
+come from Awin's transactions (declined and deleted ones excluded; non-USD ones skipped and
+counted in the log, since Pinterest spend is in USD), and the join list gets an Awin section.
 Awin can't pick a niche, so give `--niche` when it's the only network.
 
 Other networks: write `PINAGENTS_EARNINGS_CSV` (`product_id,date,earnings`) from your network's
