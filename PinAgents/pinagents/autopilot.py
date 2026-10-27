@@ -17,12 +17,11 @@ import json
 import os
 from datetime import date, timedelta
 
-import xml.etree.ElementTree as ET
-
 import requests
 
 from .budget_guard import BudgetGuard, SpendRefused, write_json
 from .dataflows import awin, cj
+from .dataflows.http import NETWORK_ERRORS
 from .dataflows.pinterest_api import PinterestClient
 from .dataflows.reports import TRACKING_COLUMNS
 from .economics import max_cpc
@@ -49,8 +48,7 @@ EMPTY_BATCH_WAIT_DAYS = 3  # after a batch where every pin failed compliance
 # ad group or ad is tried again after this many days, up to REFUSED_MAX_TRIES times in all.
 REFUSED_RETRY_DAYS = 14
 REFUSED_MAX_TRIES = 3
-# What an affiliate network's API can throw: HTTP and network errors, bad or unexpected data.
-NETWORK_ERRORS = (ValueError, OSError, requests.RequestException, ET.ParseError, csv.Error)
+EARNINGS_ALERT_DAYS = 3  # consecutive failed earnings reports before the log calls it a real problem
 
 
 def _empty_state() -> dict:
@@ -109,14 +107,24 @@ def run_cycle(niche: str | None, products_csv: str | None, config: dict, client=
             config = {**config, "earnings_csv": config["earnings_csv"] or config["network_earnings_path"]}
             try:
                 skipped = _write_network_earnings(networks, config["earnings_csv"], _days_ago(today, STATS_DAYS), today)
+                st["earnings_failed_days"] = 0
                 if skipped:
                     log.append(f"Skipped {skipped} Awin transactions not in USD: they can't be weighed "
                                f"against Pinterest's USD spend.")
             except NETWORK_ERRORS as err:
                 # Without earnings no product can be judged, so nothing should spend until it's back.
                 earnings_ok = False
+                st["earnings_failed_days"] = st.get("earnings_failed_days", 0) + 1
                 log.append(f"Earnings report failed ({type(err).__name__}: {err}).")
-                _set_campaign(st, client, "PAUSED", "earnings report unavailable; resumes when it's back", log)
+                if st["earnings_failed_days"] >= EARNINGS_ALERT_DAYS:
+                    log.append(f"ATTENTION: the earnings report has failed {st['earnings_failed_days']} "
+                               f"cycles in a row, so this is likely not an outage; ads stay paused until "
+                               f"it's fixed. Run `pinagents check` for details.")
+                try:
+                    _set_campaign(st, client, "PAUSED", "earnings report unavailable; resumes when it's back", log)
+                except (ValueError, requests.RequestException) as pause_err:
+                    log.append(f"ATTENTION: couldn't pause the campaign either ({pause_err}); it keeps "
+                               f"running on its current bids and caps until the next cycle.")
             if niche and (st.get("last_join_list") or "") <= _days_ago(today, 7):
                 try:
                     path = _write_join_list(st, niche, config)
@@ -176,7 +184,8 @@ def _discover(st, niche, client, config, today, log) -> tuple[str, str]:
 
 def _write_join_list(st, niche, config) -> str:
     path = os.path.join(config["results_dir"], "join_list.md")
-    known = st.get("niche_categories") or {}
+    known = st.get("niche_categories")
+    known = known if isinstance(known, dict) else {}  # state saved before categories carried their niche
     categories = known.get("categories", []) if known.get("niche") == niche else []  # never a past niche's
     if cj.configured():
         cj.write_join_list(niche, path, categories)
@@ -308,6 +317,10 @@ def _apply_changed_settings(st, client, config, log) -> None:
                 log.append(f"Ads for {pid} now ${budget:.2f}/day.")
             except (ValueError, requests.HTTPError) as err:  # e.g. below Pinterest's minimum budget
                 log.append(f"Pinterest refused ${budget:.2f}/day for {pid}: {err}")
+                if budget < g["budget"]:  # a refused cut would leave budgets over the daily cap
+                    client.set_status("ad_groups", [g["id"]], "PAUSED")
+                    g.update(status="PAUSED", reason=f"couldn't cut its budget to ${budget:.2f}/day to fit the daily cap")
+                    log.append(f"Paused ads for {pid}: {g['reason']}.")
 
 
 def _calibrate_bids(st, client, by_product, earnings, config, min_bid: float) -> None:

@@ -1,6 +1,8 @@
 import json
 import os
 
+import pytest
+
 from pinagents.autopilot import run_cycle
 from pinagents.dataflows.pinterest_api import PinterestClient
 
@@ -356,3 +358,33 @@ def test_refused_setting_changes_are_logged_not_fatal(tmp_path):
     c.update(ads_total_cap=1.0)
     log = run_cycle("home office", PRODUCTS, c, client, today="2026-10-27")
     assert any("refused the new total cap" in line for line in log)
+
+
+def test_a_refused_budget_cut_pauses_that_product_to_stay_within_the_cap(tmp_path):
+    c, client = full_config(tmp_path, ads_daily_cap=50.0, ad_group_daily_budget=10.0), FakeClient()
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-25")
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-26")
+    first = next(pid for pid, g in state(tmp_path)["groups"].items() if g["status"] == "ACTIVE")
+    first_id = state(tmp_path)["groups"][first]["id"]
+    real = client.update_ad_group
+
+    def refuse_first(ad_group_id, max_cpc=None, daily_budget=None):
+        if daily_budget is not None and ad_group_id == first_id:
+            raise ValueError("below Pinterest's minimum daily budget")
+        return real(ad_group_id, max_cpc=max_cpc, daily_budget=daily_budget)
+    client.update_ad_group = refuse_first
+    c.update(ads_daily_cap=6.0)                               # forces a cut for every product
+    run_cycle("home office", PRODUCTS, c, client, today="2026-10-27")
+    st = state(tmp_path)
+    assert st["groups"][first]["status"] == "PAUSED"
+    active = [g for g in st["groups"].values() if g["status"] == "ACTIVE"]
+    assert sum(g["budget"] for g in active) <= 6.0 and st["campaign"]["status"] == "ACTIVE"
+
+
+def test_pinterest_item_level_refusals_in_a_200_raise(monkeypatch):
+    from pinagents.dataflows.pinterest_api import PinterestClient
+    client = PinterestClient({"allow_ads": True, "pinterest_ad_account_id": "1"})
+    client.token = "t"
+    monkeypatch.setattr(client, "_request", lambda *a, **kw: {"items": [{"exceptions": [{"code": 2, "message": "budget too low"}]}]})
+    with pytest.raises(ValueError, match="budget too low"):
+        client.update_ad_group("123", daily_budget=0.5)

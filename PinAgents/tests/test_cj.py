@@ -1,6 +1,8 @@
 import csv
+from datetime import date
 
 import pytest
+import requests
 
 from pinagents.autopilot import run_cycle
 from pinagents.dataflows import cj
@@ -313,3 +315,53 @@ def test_cj_error_is_shown_when_it_cannot_pick_a_niche(monkeypatch, tmp_path):
     monkeypatch.setattr(cj, "discover", no_categories)
     with pytest.raises(ValueError, match="lists a category"):
         _discover({}, None, FakeClient(), {"results_dir": str(tmp_path)}, "2026-10-25", [])
+
+
+def test_join_list_handles_state_saved_before_categories_had_their_niche(tmp_path, monkeypatch):
+    from pinagents.autopilot import _write_join_list
+    monkeypatch.setenv("CJ_API_TOKEN", "t")
+    monkeypatch.setenv("CJ_COMPANY_ID", "c")
+    monkeypatch.setenv("CJ_WEBSITE_ID", "w")
+    seen = {}
+    monkeypatch.setattr(cj, "write_join_list", lambda niche, path, categories=(): seen.update(c=categories))
+    _write_join_list({"niche_categories": ["Rugs"]}, "Rugs", {"results_dir": str(tmp_path)})
+    assert seen["c"] == []
+
+
+def test_partial_commission_reports_are_split_into_smaller_windows(fake_cj, monkeypatch, tmp_path):
+    asked = []
+
+    def post(method, url, json, **kw):
+        since = json["query"].split('sincePostingDate: "')[1][:10]
+        before = json["query"].split('beforePostingDate: "')[1][:10]
+        asked.append((since, before))
+        days = (date.fromisoformat(before) - date.fromisoformat(since)).days
+        complete = days <= 4                                        # CJ's limit, in this fake
+        return Resp(body={"data": {"publisherCommissions": {"payloadComplete": complete, "records": [
+            {"postingDate": f"{since}T10:00:00Z", "shopperId": "cj9001", "pubCommissionAmountUsd": 1.0}] if complete else []}}})
+    monkeypatch.setattr(cj.http, "request", post)
+    cj.write_earnings(str(tmp_path / "e.csv"), "2026-10-01", "2026-10-16")
+    rows = list(csv.DictReader(open(tmp_path / "e.csv")))
+    complete = [w for w in asked if (date.fromisoformat(w[1]) - date.fromisoformat(w[0])).days <= 4]
+    assert len(rows) == len(complete) >= 4
+    covered = sorted(complete)
+    assert covered[0][0] == "2026-10-01" and covered[-1][1] == "2026-10-17"
+    assert all(a[1] == b[0] for a, b in zip(covered, covered[1:]))  # no gaps, no overlaps
+
+
+def test_repeated_earnings_failures_raise_attention_and_pause_failures_are_logged(fake_cj, monkeypatch, tmp_path):
+    c, client = full_config(tmp_path, earnings_csv=""), FakeClient()
+    c["network_earnings_path"] = str(tmp_path / "earnings.csv")
+    run_cycle("Rugs", None, c, client, today="2026-10-25")
+    run_cycle("Rugs", None, c, client, today="2026-10-26")
+    real = cj.http.request
+    monkeypatch.setattr(cj.http, "request", lambda method, url, **kw: Resp(body={"errors": [{"message": "down"}]})
+                        if url == cj.COMMISSIONS else real(method, url, **kw))
+
+    def unreachable(*a, **kw):
+        raise requests.ConnectionError("pinterest unreachable")
+    client.set_status = unreachable
+    logs = [run_cycle("Rugs", None, c, client, today=f"2026-10-{d}") for d in (27, 28, 29)]
+    assert any("couldn't pause the campaign" in line for line in logs[0])
+    assert not any("ATTENTION: the earnings report" in line for line in logs[1])
+    assert any("failed 3 cycles in a row" in line for line in logs[2])

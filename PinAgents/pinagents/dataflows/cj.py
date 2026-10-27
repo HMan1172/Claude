@@ -237,9 +237,13 @@ def _commissions(start: date, end: date, click_dates: bool) -> dict:
 def write_earnings(path: str, since: str, today: str) -> None:
     """Rewrite the product_id,date,earnings,click_date CSV the autopilot reads, from CJ commissions.
     click_date (when CJ provides it) lets the autopilot measure how long sales take to post."""
-    rows, start, click_dates = [], date.fromisoformat(since), True
-    while start <= date.fromisoformat(today):
-        end = min(start + timedelta(days=30), date.fromisoformat(today) + timedelta(days=1))
+    rows, click_dates = [], True
+    windows, start, last = [], date.fromisoformat(since), date.fromisoformat(today) + timedelta(days=1)
+    while start < last:
+        windows.append((start, min(start + timedelta(days=30), last)))
+        start = windows[-1][1]
+    while windows:
+        start, end = windows.pop(0)
         try:
             data = _commissions(start, end, click_dates)
         except ValueError as err:
@@ -248,12 +252,15 @@ def write_earnings(path: str, since: str, today: str) -> None:
             click_dates = False  # click dates are a bonus; never lose the earnings over them
             data = _commissions(start, end, click_dates)
         if not data.get("payloadComplete", True):
-            raise ValueError("CJ returned a partial commission report; too many records for one call.")
+            if end - start <= timedelta(days=1):
+                raise ValueError("CJ returned a partial commission report even for a single day.")
+            mid = start + (end - start) / 2  # too many records for one call: ask for half at a time
+            windows[:0] = [(start, mid), (mid, end)]
+            continue
         for r in data["records"]:
             if r.get("shopperId"):
                 rows.append([r["shopperId"], r["postingDate"][:10], r["pubCommissionAmountUsd"],
                              (r.get("clickDate") or "")[:10]])
-        start = end
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)

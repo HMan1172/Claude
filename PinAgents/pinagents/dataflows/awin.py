@@ -18,9 +18,8 @@ import re
 import time
 from datetime import date, timedelta
 
-import requests
-
 from . import http
+from .http import NETWORK_ERRORS
 
 API = "https://api.awin.com"
 FEED_LIST = "https://ui.awin.com/productdata-darwin-download/publisher/{pub}/{key}/1/feedList"
@@ -31,6 +30,7 @@ PRODUCTS_PER_PROGRAMME = 25
 CANDIDATES = 40
 DETAIL_LOOKUPS = 15  # programmedetails calls per discover or join list
 MAX_ROWS_SCANNED = 20_000  # per feed; some feeds hold hundreds of thousands of products
+MAX_FEEDS_SCANNED = 20  # per discover, so a niche matching nothing can't mean downloading every feed
 API_SPACING = 3.1  # seconds between api.awin.com calls: Awin allows 20 a minute
 DROPPED_STATUSES = {"declined", "deleted"}
 _last_call = [0.0]
@@ -76,27 +76,26 @@ def discover(niche: str, out_path: str) -> str:
         "GET", FEED_LIST.format(pub=os.environ["AWIN_PUBLISHER_ID"], key=os.environ["AWIN_FEED_KEY"]),
         timeout=60).text)))
     words = _words(niche)
-    matched, others, rates, lookups = [], [], {}, 0
+    matched, others, rates, lookups, scanned = [], [], {}, 0, 0
     for f in feeds:
         adv = str(f.get("Advertiser ID", ""))
         if f.get("Membership Status") != "active" or f.get("Datafeed Format") == "Google":
             continue
+        if (adv in rates and not rates[adv]) or (adv not in rates and lookups >= DETAIL_LOOKUPS):
+            continue  # no usable commission, or no lookups left: don't download its feed
+        if scanned >= MAX_FEEDS_SCANNED or len(matched) >= CANDIDATES:
+            break
+        scanned += 1
         try:
             hits, rest = _feed_products(f["Feed ID"].lstrip("Ff"), words)
-        except (OSError, EOFError, csv.Error, requests.RequestException):
+            if (hits or rest) and adv not in rates:
+                lookups += 1
+                rates[adv] = commission_rate(adv)
+        except NETWORK_ERRORS:  # one broken feed or lookup mustn't stop the rest
             continue
-        if not (hits or rest):
-            continue
-        if adv not in rates:
-            if lookups >= DETAIL_LOOKUPS:
-                continue
-            lookups += 1
-            rates[adv] = commission_rate(adv)
-        if rates[adv]:
+        if rates.get(adv):
             matched += [_row(item, rates[adv]) for item in hits]
             others += [_row(item, rates[adv]) for item in rest]
-        if len(matched) >= CANDIDATES:
-            break
     rows = (matched or others)[:CANDIDATES]
     if not rows:
         raise ValueError("Awin returned no usable products from your joined programmes.")

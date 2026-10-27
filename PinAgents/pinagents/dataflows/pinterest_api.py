@@ -93,6 +93,13 @@ class PinterestClient:
         return self._request("POST", "/pins", idempotent=False, json=body)
 
     # ---- ads ------------------------------------------------------------
+    def _batch_update(self, kind: str, changes: list[dict]) -> None:
+        """PATCH ads objects; Pinterest reports per-item refusals inside a 200 response."""
+        out = self._request("PATCH", f"/ad_accounts/{self.ad_account}/{kind}", json=changes)
+        refused = [i["exceptions"] for i in (out or {}).get("items", []) if i.get("exceptions")]
+        if refused:
+            raise ValueError(f"Pinterest refused the {kind[:-1]} change: {refused}")
+
     def _batch_create(self, kind: str, item: dict) -> str:
         if not self.ads_live:
             return self._dry_id(kind.rstrip("s"))
@@ -220,20 +227,19 @@ class PinterestClient:
             change["bid_in_micro_currency"] = int(max_cpc * MICRO)
         if daily_budget is not None:
             change["budget_in_micro_currency"] = int(daily_budget * MICRO)
-        self._request("PATCH", f"/ad_accounts/{self.ad_account}/ad_groups", json=[change])
+        self._batch_update("ad_groups", [change])
 
     def update_campaign_cap(self, campaign_id: str, lifetime_cap: float) -> None:
         if not self.ads_live or campaign_id.startswith("dry-"):
             return
-        self._request("PATCH", f"/ad_accounts/{self.ad_account}/campaigns", json=[{
-            "id": campaign_id, "ad_account_id": self.ad_account, "lifetime_spend_cap": int(lifetime_cap * MICRO)}])
+        self._batch_update("campaigns", [{"id": campaign_id, "ad_account_id": self.ad_account,
+                                          "lifetime_spend_cap": int(lifetime_cap * MICRO)}])
 
     def set_status(self, kind: str, ids: list[str], status: str) -> None:
         """kind is "campaigns" or "ad_groups"; status is "ACTIVE" or "PAUSED"."""
         if not ids or not self.ads_live:
             return
-        self._request("PATCH", f"/ad_accounts/{self.ad_account}/{kind}",
-                      json=[{"id": i, "status": status} for i in ids])
+        self._batch_update(kind, [{"id": i, "status": status} for i in ids])
 
     def ad_stats(self, ad_ids: list[str], start: str, end: str) -> dict:
         """Totals per ad: {ad_id: {"spend", "clicks", "impressions"}}. Dry run returns nothing."""

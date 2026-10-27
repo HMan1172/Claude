@@ -1,9 +1,16 @@
 """HTTP with retries, so one network hiccup or rate limit doesn't sink an unattended day."""
+import csv
 import time
+import xml.etree.ElementTree as ET
+import zlib
 
 import requests
 
 RETRY_STATUS = {429, 500, 502, 503, 504}
+# What an affiliate network or its feeds can throw: HTTP and network errors, and bad, corrupt or
+# unexpected data (ValueError covers UnicodeDecodeError and JSON errors; OSError covers gzip's).
+NETWORK_ERRORS = (ValueError, OSError, EOFError, zlib.error, csv.Error, ET.ParseError,
+                  requests.RequestException)
 WAITS = (2, 8, 30)  # seconds before each retry
 
 
