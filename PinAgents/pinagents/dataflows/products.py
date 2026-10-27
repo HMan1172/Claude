@@ -33,6 +33,7 @@ def load_products(path: str) -> list[dict]:
                 "expected_commission": round(price * rate, 2),
                 "program": (row.get("program") or "").strip(),
                 "notes": (row.get("notes") or "").strip(),
+                "image_url": (row.get("image_url") or "").strip(),  # product photo for the pin
                 "domain": urlparse(row["url"].strip()).netloc.lower(),
                 # Share of clicks that buy, as your affiliate network reports it for this program.
                 "conversion_rate": _rate(row["conversion_rate"]) if (row.get("conversion_rate") or "").strip() else None,

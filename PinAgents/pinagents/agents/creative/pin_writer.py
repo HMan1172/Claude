@@ -40,6 +40,7 @@ def _finalize(pin: dict, product: dict, disclosure: str) -> dict:
         "alt_text": pin.get("alt_text", "").strip(),
         "link": product["url"],
         "product_name": product["name"],
+        "image_url": product.get("image_url", ""),
     }
     out["key"] = pin_key(out)
     return out

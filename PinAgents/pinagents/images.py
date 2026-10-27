@@ -1,13 +1,17 @@
-"""Draws a simple text pin (1000 x 1500, Pinterest's 2:3 shape) for each approved pin.
+"""Draws each approved pin as a 1000 x 1500 image (Pinterest's 2:3 shape).
 
-These are made in code, not by an image model, so Pinterest's AI-image labels don't apply.
-Swap in real product photos later for better results.
+With a product photo (image_url), the photo fills the top and the headline sits in a band below;
+without one, or if the photo can't be fetched, it's a text-only design. Made in code, not by an
+image model, so Pinterest's AI-image labels don't apply.
 """
 import hashlib
+import io
 import os
 import textwrap
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+from .dataflows import http
 
 W, H = 1000, 1500
 PALETTES = [
@@ -28,9 +32,38 @@ def _font(size: int):
     return ImageFont.load_default(size=size)
 
 
+def _centered(d, lines, font, y, line_h, fill):
+    for line in lines:
+        d.text(((W - d.textlength(line, font=font)) / 2, y), line, font=font, fill=fill)
+        y += line_h
+    return y
+
+
+def _photo_pin(pin: dict, bg: str, fg: str) -> Image.Image:
+    photo = Image.open(io.BytesIO(http.request("GET", pin["image_url"], timeout=20).content)).convert("RGB")
+    photo = ImageOps.contain(photo, (W - 80, 1000 - 80))  # whole product visible, never cropped
+    img = Image.new("RGB", (W, H), "white")
+    img.paste(photo, ((W - photo.width) // 2, (1000 - photo.height) // 2))
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 1000, W, H], fill=bg)
+    head = textwrap.wrap(pin["overlay_text"], width=20)[:2]
+    sub = textwrap.wrap(pin["title"], width=40)[:2]
+    y = 1000 + (500 - (len(head) * 88 + 30 + len(sub) * 50)) // 2  # centred in the band
+    y = _centered(d, head, _font(72), y, 88, fg)
+    _centered(d, sub, _font(38), y + 30, 50, fg)
+    return img
+
+
 def draw_pin(pin: dict, out_path: str) -> str:
     idx = int(hashlib.md5(pin["product_id"].encode()).hexdigest(), 16) % len(PALETTES)
     bg, fg = PALETTES[idx]
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    if pin.get("image_url"):
+        try:
+            _photo_pin(pin, bg, fg).save(out_path, "PNG")
+            return out_path
+        except Exception:  # unreachable or unreadable photo: use the text design instead
+            pass
     img = Image.new("RGB", (W, H), bg)
     d = ImageDraw.Draw(img)
 
@@ -51,6 +84,5 @@ def draw_pin(pin: dict, out_path: str) -> str:
         w = d.textlength(line, font=sub_font)
         d.text(((W - w) / 2, y + 80 + i * 56), line, font=sub_font, fill=fg)
 
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     img.save(out_path, "PNG")
     return out_path

@@ -26,7 +26,8 @@ LOOKUP_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 </advertisers></cj-api>"""
 
 PRODUCTS = {"data": {"shoppingProducts": {"resultList": [
-    {"id": "9001", "title": "Washable Runner Rug", "price": {"amount": "129.00", "currency": "USD"},
+    {"id": "9001", "title": "Washable Runner Rug", "imageLink": "https://img.rugco.com/runner.jpg",
+     "price": {"amount": "129.00", "currency": "USD"},
      "linkCode": {"clickUrl": "https://www.anrdoezrs.net/click-123-456?url=https%3A%2F%2Frugco.com%2Frunner"}},
     {"id": "9002", "title": "Insecure Link Rug", "price": {"amount": "99.00", "currency": "USD"},
      "linkCode": {"clickUrl": "http://www.anrdoezrs.net/click-123-789"}},
@@ -72,6 +73,7 @@ def test_discover_writes_a_products_csv(fake_cj, tmp_path):
     p = products[0]
     assert p["url"].endswith("&sid=cj9001") and p["price"] == 129.0
     assert p["commission_rate"] == 0.12 and p["epc"] == 0.45
+    assert p["image_url"] == "https://img.rugco.com/runner.jpg"
 
 
 def test_write_earnings_matches_products_by_sid(fake_cj, tmp_path):
@@ -169,3 +171,14 @@ def test_delivery_estimate_converts_micro_currency(monkeypatch):
     est = client.delivery_estimate(5.0, "2026-10-27")
     assert est == {"cpc": 0.42, "cpc_lower": 0.25, "cpc_upper": 0.9, "weekly_click": 85}
     assert sent["json"][0]["daily_spend_cap"] == 5_000_000
+
+
+def test_products_still_load_if_cj_has_no_imagelink_field(fake_cj, monkeypatch):
+    def post(method, url, json, **kw):
+        if "__type" in json["query"]:
+            return Resp(body={"data": {"__type": None}})
+        if "imageLink" in json["query"]:
+            return Resp(body={"errors": [{"message": 'Cannot query field "imageLink" on type "ShoppingProduct".'}]})
+        return Resp(body=PRODUCTS)
+    monkeypatch.setattr(cj.http, "request", post)
+    assert len(cj.program_products({"id": "111"}, [])) == 2

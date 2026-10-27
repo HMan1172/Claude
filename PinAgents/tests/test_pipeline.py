@@ -130,3 +130,29 @@ def test_writer_keeps_rejected_pins_the_model_skipped():
     out = create_pin_writer(llm, {"disclosure": DISCLOSURE})(
         {"shortlist": [product], "drafts": drafts, "review": review, "niche": "x"})
     assert sorted(d["key"] for d in out["drafts"]) == ["a-v1", "a-v2"]
+
+
+def test_pins_use_the_product_photo_and_fall_back_to_text(tmp_path, monkeypatch):
+    import io
+
+    from PIL import Image
+
+    from pinagents import images
+
+    buf = io.BytesIO()
+    Image.new("RGB", (400, 300), "red").save(buf, "PNG")
+
+    class Resp:
+        content = buf.getvalue()
+
+    monkeypatch.setattr(images.http, "request", lambda method, url, **kw: Resp())
+    pin = {"product_id": "a", "overlay_text": "Tidy desk", "title": "A tidy desk setup",
+           "image_url": "https://img.example.com/a.png"}
+    photo = Image.open(images.draw_pin(pin, str(tmp_path / "photo.png")))
+    assert photo.size == (1000, 1500) and photo.getpixel((500, 500)) == (255, 0, 0)
+
+    def fail(*a, **kw):
+        raise OSError("unreachable")
+    monkeypatch.setattr(images.http, "request", fail)
+    text = Image.open(images.draw_pin(pin, str(tmp_path / "text.png")))
+    assert text.size == (1000, 1500) and text.getpixel((500, 500)) != (255, 0, 0)

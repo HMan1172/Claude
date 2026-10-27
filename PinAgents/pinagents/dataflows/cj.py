@@ -104,14 +104,19 @@ def joined_programs() -> list[dict]:
         page += 1
 
 
-def program_products(program: dict, keywords: list[str]) -> list[dict]:
+def program_products(program: dict, keywords: list[str], photos: bool = True) -> list[dict]:
     keyword_arg = f"keywords: {json.dumps(keywords)}, " if keywords else ""
     query = f"""{{ shoppingProducts(companyId: "{os.environ['CJ_COMPANY_ID']}",
         partnerIds: ["{program['id']}"], partnerStatus: JOINED,
         {keyword_arg}limit: {PRODUCTS_PER_PROGRAM}) {{
-      resultList {{ id title price {{ amount currency }}
+      resultList {{ id title {"imageLink " if photos else ""}price {{ amount currency }}
         linkCode(pid: "{os.environ['CJ_WEBSITE_ID']}") {{ clickUrl }} }} }} }}"""
-    return _graphql(PRODUCTS, query)["shoppingProducts"]["resultList"] or []
+    try:
+        return _graphql(PRODUCTS, query)["shoppingProducts"]["resultList"] or []
+    except ValueError as err:
+        if photos and "imageLink" in str(err):  # photos are a bonus; never lose the products over them
+            return program_products(program, keywords, photos=False)
+        raise
 
 
 def pick_niche(programs: list[dict]) -> str:
@@ -148,6 +153,7 @@ def discover(niche: str | None, out_path: str) -> tuple[str, str]:
                 "price": float(price["amount"]), "commission_rate": program["commission_rate"],
                 "program": program["name"], "notes": "found automatically on CJ",
                 "epc": "" if program["epc"] is None else program["epc"],
+                "image_url": (item.get("imageLink") or "").strip(),
             })
         if len(rows) >= CANDIDATES:
             break
